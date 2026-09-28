@@ -1,6 +1,7 @@
-# 이 파일 하나만 OMV(또는 아무 Docker 호스트)의 compose 에 붙여넣고 Up 하면 git 에서 소스를 받아 빌드 → 실행까지 됩니다.
-# 1) build.context 는 GitHub 저장소 theman001/JEV_Coin (Public). 비공개로 바꾸면 https://<TOKEN>@github.com/... 형태로 써야 합니다.
-# 2) 환경변수는 .env.example 를 참고해 compose 의 .env 에 입력 (아래 ${...} 로 치환됨)
+# 템플릿 (git 추적). 비밀값을 넣지 않는다.
+# 사용법 A) 이 파일을 docker-compose.yml 로 복사해 값을 직접 적는다 (docker-compose.yml 은 .gitignore 대상 — 절대 커밋 금지).
+# 사용법 B) 이 파일을 그대로 OMV compose 에 붙여넣고, .env.example 을 참고한 .env 를 OMV 의 환경변수 칸에 입력 (아래 ${...} 로 치환됨).
+# build.context 는 GitHub 저장소 theman001/JEV_Coin (Public). 비공개로 바꾸면 https://<TOKEN>@github.com/... 형태로 써야 합니다.
 # 참고: 빌드하려면 Docker 호스트에 git 이 필요합니다 (없으면: apt install git).
 #       코드를 업데이트한 뒤에는 Up 만으로는 재빌드되지 않습니다 → OMV 의 "Build"(또는 "Pull and build") 후 Up.
 name: jev-coin

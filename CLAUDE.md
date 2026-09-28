@@ -64,7 +64,7 @@ src/
   web.py      표준 라이브러리 HTTP 서버 + Basic 인증 + CSRF(JSON 콘텐츠 타입만 POST 허용). 의존성 추가 없음
   static/index.html   모니터링 UI (바닐라 JS, 2초 폴링)
   main.py     엔트리: 엔진 스레드 + 웹. `--once` 는 웹 없이 폴링 1회 (Jev 연결 확인용)
-Dockerfile · docker-compose.yml · .env.example · .dockerignore   ARM64/OMV 배포
+Dockerfile · docker-compose.example.yml(템플릿, 추적) · docker-compose.yml(**비밀값 하드코딩, .gitignore**) · .env.example · .dockerignore   ARM64/OMV 배포
 tests/        정책·state·브로커·엔진·웹·SDK 경로 테스트 (Jev/거래소 호출 없이 동작해야 함)
 ```
 
@@ -94,7 +94,8 @@ set -a; . ./.env; set +a
 ## 배포 (Radxa Rock 5 / OMV8 / Docker)
 
 - 사용자는 compose 파일을 OMV compose 플러그인에 붙여넣고 Up 한다. `build.context` 는 **git URL** (`https://github.com/theman001/JEV_Coin.git#main`) → 저장소에 Dockerfile 이 있어야 한다.
-- OMV 플러그인은 `.env` 를 compose 폴더의 `<이름>.env` 로 두고 `--env-file` 로 넘긴다 → `env_file:` 이 아니라 **`environment:` 의 `${VAR}` 치환**만 쓴다. `WEB_PASSWORD` 는 `${...:?}` 로 필수 지정.
+- **`docker-compose.yml` 은 `.env` 값이 하드코딩된 로컬 전용 파일 (`.gitignore`, `.dockerignore`). 절대 커밋/출력/로그하지 말 것.** 추적되는 템플릿은 `docker-compose.example.yml` 이고, 값 변경 시 둘을 함께 유지한다. 저장소는 Public 이라 비밀값이 한 번 push 되면 회수가 어렵다 — 커밋 전 `git grep --cached -F <값>` 로 확인.
+- 템플릿은 `environment:` 의 `${VAR}` 치환 방식 (OMV 플러그인은 `.env` 를 `<이름>.env` 로 두고 `--env-file` 로 넘긴다 → `env_file:` 은 쓰지 않는다). `WEB_PASSWORD` 는 `${...:?}` 로 필수 지정. 하드코딩 시 값의 `$` 는 `$$` 로 이스케이프.
 - 상태는 named volume `jev-data:/data`. **폴링마다 디스크에 쓰지 말 것** (SD/eMMC 마모): 상태가 바뀔 때만 `_save()`.
 - ARM64: 런타임 의존성 전부 aarch64 cp314 휠 존재 확인함 (`ta` 만 순수 파이썬 sdist). 베이스 이미지 `python:3.14-slim`.
 - `docker stop` 시 SIGTERM 처리 필수 (PID 1 은 기본 핸들러 없음) → `main.py` 가 처리 + compose `init: true`.
@@ -119,7 +120,9 @@ set -a; . ./.env; set +a
 ## 참고 사항
 
 - **Jev SDK 확정 사항** (typesafe-sdk 0.7.2, 설치본에서 직접 확인): 응답은 `resp.answers[name]` 로 접근 (`.choice/.confidence/.probabilities`, `.noul`, `.score`). `resp.choices/nouls/scores` 도 동일 객체를 준다. 예외는 `TypeSafeError` 계열(`TypeSafeRateLimitError`, `TypeSafeAPITimeoutError` 등). 기본 재시도 2회. 테스트는 `TypeSafeClient(transport=httpx2.MockTransport(...))` 로 네트워크 없이 SDK 경로를 통과시킨다.
-- **실제 Jev API 검증 완료** (2026-09-28, `--once`): `POST /v1/systemone` 200, ~270ms, `side`/`reversal_risk` 파싱 정상.
+- **실서버 E2E 검증 완료** (2026-09-28, 실제 Jev 키 + Binance 실데이터, 웹 API로 구동): Jev 호출 7회 전부 200 (202~267ms), 호출 수 == 판단 수(폴링 중 호출 없음), 캔들 마감 시 정확히 +1회, 5개 코인 전환·청산·정책 게이트(BTC 비용 게이트) 정상, 회계 항등식 유지, 종가/EMA/RSI 를 pandas 로 독립 계산해 소수점까지 일치, 서버 로그 WARNING/ERROR 0건.
+- **실서버에서 아직 못 본 것**: 손절 실발동(단위테스트만), 수 시간 이상 장기 가동, Jev 실장애/킬스위치 실발동(모의로만), 여러 캔들에 걸친 판단 추이. OMV 첫 가동 후 판단 이력(`/data/judgments.jsonl`)과 웹으로 확인할 것.
+- 검증 중 코인 전환으로 강제 청산한 모의거래는 전부 비용만큼 손실(-0.14%/건)이었다 — 전략 성과가 아니라 테스트 부산물이므로 성과 평가에 쓰지 말 것 (실제 계정 상태는 임시 DATA_DIR 이라 남지 않음).
 - **Docker 이미지 빌드/기동은 미검증** — 개발 머신에 Docker 가 없었다. 대신 깨끗한 venv(런타임 requirements 만)에서 실서버를 띄워 API·UI·재시작 복원을 검증함. OMV 에서 처음 Up 할 때 빌드 로그 확인 필요. OMV 플러그인의 git URL context 지원 여부도 미확인 (실패 시 저장소를 보드에 clone 하고 `context: .` 사용).
 - 웹 UI 는 headless Chromium(playwright-core, 스크래치패드 설치)으로 렌더링·버튼 동작을 확인함.
 - 비결정성: 동일 state 반복 호출 시 확률이 흔들린다. 틱당 1회 호출 + 결과 로깅.

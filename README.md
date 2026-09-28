@@ -14,11 +14,12 @@
 
 ## OMV(Docker Compose)로 배포
 
-1. 소스는 GitHub 공개 저장소 `theman001/JEV_Coin`에 있습니다. (비공개로 바꾸면 [docker-compose.yml](docker-compose.yml)의 context를 `https://<TOKEN>@github.com/...` 형태로)
+1. 소스는 GitHub 공개 저장소 `theman001/JEV_Coin`에 있습니다. (비공개로 바꾸면 [docker-compose.example.yml](docker-compose.example.yml)의 context를 `https://<TOKEN>@github.com/...` 형태로)
 2. OMV 웹 GUI → **Services → Compose → Files → 추가**.
    - 이름: `jev-coin`
-   - 내용: [docker-compose.yml](docker-compose.yml)을 그대로 붙여넣기 (이미 `theman001/JEV_Coin`을 가리킴)
-   - 환경변수(.env): [.env.example](.env.example)을 복사해 `TYPESAFE_API_KEY`, `WEB_PASSWORD`를 채워 붙여넣기
+   - 내용: [docker-compose.example.yml](docker-compose.example.yml)을 `docker-compose.yml`로 복사해 `environment:` 값을 직접 적은 뒤 그 내용을 붙여넣기 (이미 `theman001/JEV_Coin`을 가리킴)
+     - `docker-compose.yml`은 API 키·비밀번호가 들어가는 **로컬 전용 파일**이라 `.gitignore` 대상입니다. 커밋/공유 금지.
+     - 대안: 예시 파일을 그대로 붙여넣고, [.env.example](.env.example)을 채운 `.env`를 OMV 환경변수 칸에 입력해도 됩니다 (`${VAR}` 치환).
 3. **Up** — 처음에는 git에서 소스를 받아 이미지를 빌드한 뒤 실행합니다 (ARM 보드에서 수 분 소요).
 4. 브라우저에서 `http://<보드IP>:8787` → `WEB_USER` / `WEB_PASSWORD`로 로그인.
 5. 코인을 고르고 **매매 실행**.

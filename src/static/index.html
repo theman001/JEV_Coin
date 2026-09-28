@@ -161,7 +161,8 @@ function render() {
     .map(r => `<tr><td class="dim">${r[0]}</td><td>${esc(r[1])}</td></tr>`).join("");
   const st = S.state || {};
   $("chips").innerHTML = ["trend","rsi_zone","return_3_bars","volatility","volume","volatility_covers_costs","current_position","position_pnl"]
-    .filter(k => k in st).map(k => `<span class="chip">${k}: ${esc(st[k])}</span>`).join("");
+    .filter(k => k in st).map(k => `<span class="chip">${k}: ${esc(st[k])}</span>`).join("")
+    + (S.running || !Object.keys(st).length ? "" : ' <span class="sub">(중지 전 Jev에 전달된 마지막 값)</span>');
 
   const J = S.judgments.find(j => j.kind === "judgment");
   $("last").innerHTML = !J ? '<span class="dim">아직 판단이 없습니다 (새 캔들이 마감되면 1회 판단)</span>' : `

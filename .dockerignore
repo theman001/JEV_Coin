@@ -6,3 +6,4 @@ __pycache__
 data
 tests
 *.md
+docker-compose*.yml
