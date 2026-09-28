@@ -1,6 +1,6 @@
 """모니터링/제어 웹: 표준 라이브러리 HTTP 서버 + HTTP Basic 인증. 의존성 없음.
 
-GET  /             UI (src/static/index.html)
+GET  /             UI (src/static/index.html, 추세추종 모드는 trend.html)
 GET  /api/status   Engine.snapshot() JSON
 POST /api/start | /api/stop | /api/symbol {"symbol": "SOL/USDT"}
 GET  /healthz      인증 없음 (Docker healthcheck용)
@@ -11,7 +11,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-INDEX = (Path(__file__).parent / "static" / "index.html").read_bytes()
+PAGES = {p.name: p.read_bytes() for p in (Path(__file__).parent / "static").glob("*.html")}  # 엔진이 page 속성으로 고른다 (기본 index.html)
 
 
 def make_server(engine, host: str, port: int, user: str, password: str) -> ThreadingHTTPServer:
@@ -41,7 +41,7 @@ def make_server(engine, host: str, port: int, user: str, password: str) -> Threa
             if not self._authed():
                 return self._send(401, b"unauthorized", "text/plain")
             if self.path == "/":
-                return self._send(200, INDEX, "text/html")
+                return self._send(200, PAGES[getattr(engine, "page", "index.html")], "text/html")
             if self.path == "/favicon.ico":  # 브라우저가 자동 요청 — 404 소음 방지
                 return self._send(204, b"", "image/x-icon")
             if self.path == "/api/status":

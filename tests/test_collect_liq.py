@@ -6,6 +6,8 @@ from aiohttp import web
 
 import src.collect_liq as cl
 
+REAL_SLEEP = asyncio.sleep  # 테스트가 asyncio.sleep 을 monkeypatch 하므로 서버 핸들러는 원본을 써야 한다
+
 RAW = {"e": "forceOrder", "E": 1790599940083, "o": {"s": "ONEUSDT", "S": "SELL", "o": "LIMIT", "f": "IOC", "q": "401929", "p": "0.0024236", "ap": "0.0024582", "X": "FILLED", "l": "178252", "z": "401929", "T": 1790599939148}}
 
 
@@ -30,7 +32,7 @@ def test_run_reconnects_after_server_drop_and_keeps_writing(tmp_path, monkeypatc
         if len(conns) == 1:
             await ws.close()  # 첫 연결은 바로 끊는다 → 재연결해야 한다
         else:
-            await asyncio.sleep(5)
+            await REAL_SLEEP(1)
         return ws
 
     async def go():
@@ -57,3 +59,41 @@ def test_run_reconnects_after_server_drop_and_keeps_writing(tmp_path, monkeypatc
 
     asyncio.run(go())
     assert len(conns) >= 2 and sum(len(p.read_text().splitlines()) for p in tmp_path.glob("*.jsonl")) >= 2
+
+
+def test_silent_stream_is_detected_warned_and_reconnected(tmp_path, monkeypatch, caplog):
+    """연결은 살아있는데 이벤트가 안 오는 '조용한 무수신' (ccxt 옛 경로에서 실제로 겪음)."""
+    conns = []
+
+    async def handler(request):
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        conns.append(1)
+        await REAL_SLEEP(1)  # 아무것도 안 보낸다
+        return ws
+
+    async def go():
+        app = web.Application()
+        app.router.add_get("/ws", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        real_sleep = asyncio.sleep
+        monkeypatch.setattr(cl.asyncio, "sleep", lambda s: real_sleep(0.05))
+        task = asyncio.create_task(cl.run(tmp_path, f"ws://127.0.0.1:{port}/ws", silence=0.2))
+        for _ in range(100):
+            if len(conns) >= 2:
+                break
+            await real_sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        await runner.cleanup()
+
+    with caplog.at_level("WARNING"):
+        asyncio.run(go())
+    assert len(conns) >= 2 and "may be broken" in caplog.text

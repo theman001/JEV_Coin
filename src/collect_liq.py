@@ -17,6 +17,7 @@ import pathlib
 import aiohttp
 
 URL = "wss://fstream.binance.com/market/ws/!forceOrder@arr"
+SILENCE_S = 300  # 전 심볼 청산은 보통 수 초마다 온다. 이보다 오래 조용하면 스트림이 죽은 것 (ccxt 가 옛 경로에서 그랬듯 오류 없이 조용히 멈춘다)
 
 
 def rows(msg: str) -> list[dict]:
@@ -35,7 +36,7 @@ def append(out_dir: pathlib.Path, r: dict) -> None:
         f.write(json.dumps(r) + "\n")
 
 
-async def run(out_dir: pathlib.Path, url: str = URL) -> None:
+async def run(out_dir: pathlib.Path, url: str = URL, silence: float = SILENCE_S) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     delay = 1
     async with aiohttp.ClientSession() as s:
@@ -43,7 +44,12 @@ async def run(out_dir: pathlib.Path, url: str = URL) -> None:
             try:
                 async with s.ws_connect(url, heartbeat=20) as ws:
                     logging.info("connected")
-                    async for m in ws:
+                    while True:
+                        try:
+                            m = await asyncio.wait_for(ws.receive(), silence)  # ws.receive(timeout=) 는 시간초과를 예외가 아니라 CLOSED 메시지로 돌려줘 원인을 구분할 수 없다
+                        except asyncio.TimeoutError:
+                            logging.warning("no liquidation events for %ss: stream may be broken, reconnecting", silence)
+                            break
                         if m.type != aiohttp.WSMsgType.TEXT:
                             break  # CLOSE/ERROR → 재연결
                         delay = 1

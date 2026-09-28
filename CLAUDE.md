@@ -64,7 +64,7 @@ src/
   setups.py      유튜브 인기 단타 패턴 10개를 결정론적 규칙으로 (파라미터 고정)
   screen.py      특징 선별(IS→OOS, BH-FDR, Bonferroni, 극단 구간 비용 후 기대수익) + 셋업 이벤트 스터디. `python -m src.screen [--micro]`
   micro.py       미시구조 로더·특징 26개(펀딩·프리미엄·OI·상위트레이더/전체 롱숏비·선물 테이커·주문서 깊이; data.binance.vision + REST, `data/micro/` 캐시). 봉 마감 전에 공개된 행만 사용(인과적, metrics 5분 지연). 라이브 봇은 아직 안 씀
-  collect_liq.py Binance 강제청산 웹소켓 수집기(별도 프로세스, `data/liq/일자.jsonl`). 무료 과거 이력이 없어 앞으로 쌓는 용도. ccxt.pro 는 옛 경로라 못 받아서 원시 웹소켓 사용
+  collect_liq.py Binance 강제청산 웹소켓 수집기(별도 프로세스 = compose 의 jev-liq, `data/liq/일자.jsonl`). 무료 과거 이력이 없어 앞으로 쌓는 용도. ccxt.pro 는 옛 경로라 못 받아서 원시 웹소켓 사용. 5분 무수신이면 경고+재연결
   jev_replay.py  Jev 입력 비교 실험(라벨만/원시만/둘 다, 5m) — 사전 고정 설계
   jev_rich.py    Jev 판단 시험(87개 특징 + 셋업, 비용 인식 크기 질문) — 사전 고정 설계
   backtest.py    백테스트 하네스(사전 고정 설계): 다음 봉 시가 체결·비용, 5코인×1h/4h/1d, Reality Check, 표본 내→외, Jev 진입 필터 평가. 실행은 개발용(`python -m src.backtest`)
@@ -72,9 +72,10 @@ src/
               매 폴링 [손절 확인 → 지표 갱신] → 새 캔들 마감 시에만 Jev 판단 → policy → broker.
               네트워크(거래소/Jev) 호출은 락 밖, 돌아온 뒤 (실행 중 & 같은 코인) 재확인, 아니면 결과 폐기
   web.py      표준 라이브러리 HTTP 서버 + Basic 인증 + CSRF(JSON 콘텐츠 타입만 POST 허용). 의존성 추가 없음
-  static/index.html   모니터링 UI (바닐라 JS, 2초 폴링)
-  main.py     엔트리: 엔진 스레드 + 웹. `--once` 는 웹 없이 폴링 1회 (Jev 연결 확인용)
-Dockerfile · docker-compose.example.yml(템플릿, 추적) · docker-compose.yml(**비밀값 하드코딩, .gitignore**) · .env.example · .dockerignore   ARM64/OMV 배포
+  trend.py    **MODE=trend** 추세추종 포트폴리오 모의 엔진(STRATEGY_RESEARCH.md §14): 4h SMA 20/50(strategies.sma_cross 재사용), 코인당 독립 슬롯(PaperBroker 재사용), 롱 전용·손절 없음, 캔들 마감 시에만 신호·저장(trend_state.json/trend.jsonl). 코인별 오류 격리(킬스위치 없음), 정지=일시정지(포지션 유지)
+  static/index.html   모니터링 UI (Jev 봇, 바닐라 JS, 2초 폴링) · static/trend.html 추세추종 UI (엔진의 page 속성으로 web.py 가 선택)
+  main.py     엔트리: 엔진 스레드 + 웹. `MODE=jev`(기본)|`trend`. `--once` 는 웹 없이 폴링 1회 (Jev 연결 확인용). 모드별 기본값(코인·거래소·주기·자본)은 DEFAULTS
+Dockerfile · docker-compose.example.yml(템플릿, 추적; 서비스 3개: jev-coin·jev-trend·jev-liq) · docker-compose.yml(**비밀값 하드코딩, .gitignore**) · .env.example · .dockerignore   ARM64/OMV 배포
 tests/        정책·state·브로커·엔진·웹·SDK 경로 테스트 (Jev/거래소 호출 없이 동작해야 함)
 ```
 
@@ -87,6 +88,9 @@ pip install -r requirements-dev.txt   # 런타임은 requirements.txt (Docker �
 
 # 테스트 (네트워크·API 키 불필요)
 .venv/bin/python -m pytest -q
+
+# 추세추종 모의 1회 (Upbit 공개 시세, 주문 없음, 저장 안 함)
+MODE=trend .venv/bin/python -m src.main --once
 
 # .env 를 환경변수로 로드 (앱은 .env 를 직접 읽지 않는다 — compose 가 주입)
 set -a; . ./.env; set +a
@@ -109,11 +113,12 @@ set -a; . ./.env; set +a; .venv/bin/python -m src.backtest --tfs 4h 1d --jev-tfs
 DATA_DIR=data .venv/bin/python -m src.collect_liq
 ```
 
-환경변수는 전부 [.env.example](.env.example) 에 있다: `TYPESAFE_API_KEY`, `WEB_USER`, `WEB_PASSWORD`, `WEB_PORT`(호스트 포트), `SYMBOLS`, `TIMEFRAME`, `EXCHANGE`, `POLL_SECONDS`. 앱 내부 전용: `DATA_DIR`(기본 `data`, 컨테이너 `/data`), `PORT`(8787). 거래소 API 키는 실주문을 구현하지 않았으므로 아직 없다.
+환경변수는 전부 [.env.example](.env.example) 에 있다: `TYPESAFE_API_KEY`, `WEB_USER`, `WEB_PASSWORD`, `WEB_PORT`(호스트 포트), `SYMBOLS`, `TIMEFRAME`, `EXCHANGE`, `POLL_SECONDS`, 추세추종용 `TREND_PORT`(8788)·`TREND_EQUITY`(원, 기본 1,000,000). 앱 내부: `MODE`(jev|trend, compose 가 서비스별로 지정). 앱 내부 전용: `DATA_DIR`(기본 `data`, 컨테이너 `/data`), `PORT`(8787). 거래소 API 키는 실주문을 구현하지 않았으므로 아직 없다.
 `.env` 는 `.gitignore`·`.dockerignore` 대상. **사용자가 실제 키를 넣은 `.env` 가 프로젝트 루트에 있다 — 내용을 출력/로그/커밋하지 말 것.**
 
 ## 배포 (Radxa Rock 5 / OMV8 / Docker)
 
+- **서비스 3개**(같은 이미지·볼륨 `jev-data`, 파일명 분리): `jev-coin`(:8787 Jev 봇) · `jev-trend`(:8788 추세추종, `MODE=trend`, 규칙·코인·주기는 사전 고정 설계라 compose 에 고정) · `jev-liq`(청산 수집, 포트 없음). 세 서비스 모두 `x-app` 앵커로 같은 `build` 를 가진다. 런타임 의존성 37개가 aarch64 cp314 휠로 존재함을 `pip download --platform` 으로 확인(`ta` 제외, 순수 sdist).
 - 사용자는 compose 파일을 OMV compose 플러그인에 붙여넣고 Up 한다. `build.context` 는 **git URL** (`https://github.com/theman001/JEV_Coin.git#main`) → 저장소에 Dockerfile 이 있어야 한다.
 - **`docker-compose.yml` 은 `.env` 값이 하드코딩된 로컬 전용 파일 (`.gitignore`, `.dockerignore`). 절대 커밋/출력/로그하지 말 것.** 추적되는 템플릿은 `docker-compose.example.yml` 이고, 값 변경 시 둘을 함께 유지한다. 저장소는 Public 이라 비밀값이 한 번 push 되면 회수가 어렵다 — 커밋 전 `git grep --cached -F <값>` 로 확인.
 - 템플릿은 `environment:` 의 `${VAR}` 치환 방식 (OMV 플러그인은 `.env` 를 `<이름>.env` 로 두고 `--env-file` 로 넘긴다 → `env_file:` 은 쓰지 않는다). `WEB_PASSWORD` 는 `${...:?}` 로 필수 지정. 하드코딩 시 값의 `$` 는 `$$` 로 이스케이프.
@@ -175,6 +180,14 @@ DATA_DIR=data .venv/bin/python -m src.collect_liq
 - **결론: 5m~1h 단타에서 우리가 접근 가능한 정보(차트·파생·주문서)의 예측 신호는 실재해도 비용 아래다. Jev 를 넣어도 상한은 그 크기.** 남은 길은 비용을 낮추거나(메이커/VIP 수수료·지정가), 더 긴 주기(4h/1d 추세추종의 낙폭 방어), 아니면 다른 종류의 정보다.
 - 함정: Binance 선물 웹소켓이 `/market/ws/` 로 이전해 ccxt 4.5.84 는 조용히 무수신. 실데이터 `metrics` OI 에 0 행 존재. 스크리닝은 NaN 표준편차 특징을 조용히 버리므로 검정 수가 기대값(특징×tf×h)과 같은지 확인할 것.
 
+### 라이브(모의) 추세추종 포트폴리오 — 진행 중 (사전 설계 STRATEGY_RESEARCH.md §14, 2026-09-28)
+- 사용자 확정: **4h SMA 20/50 · 5코인(BTC/ETH/SOL/XRP/DOGE) 동일가중 · Upbit KRW**, 롱 전용, 손절 없음, 코인당 독립 슬롯. 낙폭 방어 용도의 **전진 검증**이며 수익 우위를 주장하지 않는다(백테스트 Reality Check 미통과).
+- 구현 검증: 캔들 단위 리플레이로 **매 봉 포지션이 백테스트 신호와 정확히 일치**하고 최종 자산이 `simulate` 와 상대오차 2e-3 이내로 일치. 변이 12개 검출. 실데이터(Upbit) `--once` + 웹 E2E + SIGTERM 재시작 복원 확인.
+- 참고 백테스트(사후 부분집합·생존 편향, 증거 아님): Upbit 4h 2022-02~ 5코인 — SMA 20/50 연 32.3%·샤프 1.11·MDD -33.5% vs 단순 보유 20.3%·0.61·-61.5%. 더 정직한 사전 기대는 79코인 결과(§10).
+- **판정은 6개월 이상·완결 거래 50건 이상일 때 1회**(1차 지표: 동일가중 단순 보유 대비 MDD). 그 전에는 결과를 성과로 주장하지 않는다. 리포트에 국면(BTC 방향)·단순 보유를 병기.
+- 기록: `/data/trend_state.json`(곡선·낙폭 포함), `/data/trend.jsonl`(캔들 마감마다 코인별 신호·체결 지연 `lag_s`). 웹 :8788.
+- 실거래 아님: 갭·슬리피지 대응 손절, 주문 재조회, 한도, 웹 인증 강화가 선행(Backlog).
+
 ### 2026-09-28 첫 2시간 런 (14:47~16:47 KST, SOL/USDT 5m, 시작 100 USDT, 실제 Jev, 왕복 비용 0.14% 반영)
 - **최종 수익률 +0.013%** (100.0135 USDT). 같은 기간 SOL 단순 보유 -0.764%. 청산 거래 2건(둘 다 숏, 1승 1패), MDD 0.068%, 포지션 보유 43%.
   - 거래 1: 숏 118.78→118.74, 유리한 변동 0.034% < 비용 0.14% → 순손실. 거래 2: 숏 118.62→118.2(+0.354%) → 순이익. 수익은 사실상 거래 1건이 만든 것.
@@ -212,4 +225,4 @@ DATA_DIR=data .venv/bin/python -m src.collect_liq
 
 ### 기타
 - **전략 조사: [STRATEGY_RESEARCH.md](STRATEGY_RESEARCH.md)** — 문헌상 근거는 일봉·저빈도 추세추종 계열, 5분봉 방향성 단타 근거는 못 찾음. 후보 규칙의 파이썬 수치화 명세와 실측(룩어헤드 검사 통과, 봉 주기별 비용 부담)이 들어 있다. 계산 프로토타입은 로컬 `data/research/strategy_proto.py`(gitignore).
-- (완료) 백테스트 하네스 — `src/backtest.py`. (완료) Upbit 원화마켓 재검증 — 게이트 미충족. 다음 후보: ① 이전 기간(2017-10~2021-09) Upbit 표본 외 검증(대형주 효과가 실재하는지 새 표본으로), ② 롱 전용 4h/1d 추세추종을 **낙폭 방어 용도**로 라이브(모의) 봇에 연결, ③ Jev 를 국면 분류 등 다른 용도로 시험(새 사전 설계 + 다중검정 필수).
+- (완료) 백테스트 하네스 — `src/backtest.py`. (완료) Upbit 원화마켓 재검증 — 게이트 미충족. 다음 후보: ① 이전 기간(2017-10~2021-09) Upbit 표본 외 검증(대형주 효과가 실재하는지 새 표본으로), ② (완료, 진행 중) 롱 전용 4h 추세추종을 **낙폭 방어 용도**로 라이브(모의) 봇에 연결 — `jev-trend`, ③ Jev 를 국면 분류 등 다른 용도로 시험(새 사전 설계 + 다중검정 필수).

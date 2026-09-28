@@ -4,17 +4,26 @@
 # build.context 는 GitHub 저장소 theman001/JEV_Coin (Public). 비공개로 바꾸면 https://<TOKEN>@github.com/... 형태로 써야 합니다.
 # 참고: 빌드하려면 Docker 호스트에 git 이 필요합니다 (없으면: apt install git).
 #       코드를 업데이트한 뒤에는 Up 만으로는 재빌드되지 않습니다 → OMV 의 "Build"(또는 "Pull and build") 후 Up.
+#
+# 서비스 3개 (같은 이미지, 같은 볼륨 jev-data — 파일 이름이 겹치지 않는다):
+#   jev-coin  Jev 판단 단타 봇 (모의, Binance)                       → :8787   state.json, judgments.jsonl
+#   jev-trend 4h SMA 20/50 추세추종 5코인 포트폴리오 (모의, Upbit KRW) → :8788   trend_state.json, trend.jsonl  (STRATEGY_RESEARCH.md §14)
+#   jev-liq   Binance 강제청산 수집기 (전 심볼, 앞으로 쌓는 데이터)     → 포트 없음 liq/YYYY-MM-DD.jsonl
+# 필요 없는 서비스는 통째로 지우면 됩니다.
 name: jev-coin
+
+x-app: &app
+  build:
+    context: https://github.com/theman001/JEV_Coin.git#main
+    # 로컬 개발 시에는 위 줄 대신:  context: .
+  image: jev-coin:latest
+  restart: unless-stopped
+  init: true
 
 services:
   jev-coin:
-    build:
-      context: https://github.com/theman001/JEV_Coin.git#main
-      # 로컬 개발 시에는 위 줄 대신:  context: .
-    image: jev-coin:latest
+    <<: *app
     container_name: jev-coin
-    restart: unless-stopped
-    init: true
     ports:
       - "${WEB_PORT:-8787}:8787"
     environment:
@@ -29,12 +38,41 @@ services:
       TZ: ${TZ:-Asia/Seoul}
     volumes:
       - jev-data:/data # 모의계좌 상태·판단 이력(judgments.jsonl). 재시작/재빌드해도 유지
-    healthcheck:
+    healthcheck: &web-health
       test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8787/healthz', timeout=3)"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 20s
+
+  jev-trend:
+    <<: *app
+    container_name: jev-trend
+    ports:
+      - "${TREND_PORT:-8788}:8787"
+    environment:
+      MODE: trend
+      WEB_USER: ${WEB_USER:-admin}
+      WEB_PASSWORD: ${WEB_PASSWORD:?.env 에 WEB_PASSWORD 를 설정하세요}
+      # 사전 고정 설계(§14.2): 규칙·코인·주기는 바꾸지 않는다. 그래서 환경변수로 열어두지 않고 여기에 고정한다.
+      SYMBOLS: BTC/KRW,ETH/KRW,SOL/KRW,XRP/KRW,DOGE/KRW
+      TIMEFRAME: 4h
+      EXCHANGE: upbit
+      POLL_SECONDS: "60"
+      PAPER_EQUITY: ${TREND_EQUITY:-1000000} # 모의 시작 자본 (원). 볼륨에 저장된 상태(trend_state.json)가 있으면 그 값이 우선
+      TZ: ${TZ:-Asia/Seoul}
+    volumes:
+      - jev-data:/data
+    healthcheck: *web-health
+
+  jev-liq:
+    <<: *app
+    container_name: jev-liq
+    command: ["python", "-m", "src.collect_liq"]
+    environment:
+      TZ: ${TZ:-Asia/Seoul}
+    volumes:
+      - jev-data:/data # /data/liq/일자.jsonl (하루 약 2MB). 5분간 이벤트가 없으면 경고 로그를 남기고 재연결 (docker logs jev-liq)
 
 volumes:
   jev-data:
