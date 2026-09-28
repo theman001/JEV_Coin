@@ -12,6 +12,7 @@ import time
 from collections import deque
 from pathlib import Path
 
+from . import collect_liq
 from .broker import PaperBroker
 from .data import StaleData, fetch_closed
 from .policy import COST_PER_SIDE, Signal
@@ -21,6 +22,7 @@ log = logging.getLogger(__name__)
 FAST, SLOW = 20, 50  # 사전 고정 (§14.2). 바꾸려면 새 사전 설계
 RULE = f"SMA {FAST}/{SLOW}"
 MAX_CURVE = 3000  # 캔들 마감마다 1점 (4h 봉이면 약 1.4년)
+LIQ_CACHE_S = 30  # UI 가 2초마다 폴링해도 청산 로그(하루 ~2MB)는 30초에 한 번만 읽는다
 
 
 def sma_signal(df) -> tuple[bool, float, float]:
@@ -46,6 +48,7 @@ class TrendEngine:
         self.curve, self.events = [], deque(maxlen=60)  # curve: [ts, 전략 자산, 단순보유 배수] 캔들 마감마다
         self.dd = {"peak": equity, "mdd": 0.0, "bh_peak": 1.0, "bh_mdd": 0.0}
         self.polled_at = self.error = None
+        self._liq, self._liq_at = None, 0.0
         self._load()
 
     @staticmethod
@@ -129,6 +132,7 @@ class TrendEngine:
 
     # ---------- 조회 ----------
     def snapshot(self) -> dict:
+        liq = self._liq_stats()  # 파일 읽기는 락 밖에서
         with self.lock:
             coins = []
             for s, b in self.slots.items():
@@ -148,9 +152,17 @@ class TrendEngine:
                 "mdd_pct": self.dd["mdd"] * 100, "bh_mdd_pct": self.dd["bh_mdd"] * 100,
                 "exposure_pct": 100 * sum(b.side == "long" for b in self.slots.values()) / len(self.slots),
                 "n_trades": sum(b.n_trades for b in self.slots.values()), "n_wins": sum(b.n_wins for b in self.slots.values()),
-                "trades": trades, "events": list(self.events)[::-1], "curve": self.curve}
+                "trades": trades, "events": list(self.events)[::-1], "curve": self.curve, "liq": liq}
 
     # ---------- 내부 ----------
+    def _liq_stats(self) -> dict | None:
+        """jev-liq 가 같은 볼륨(/data/liq)에 쌓는 청산 수집 현황. 수집기가 없거나 --once 면 None."""
+        if not self.data_dir:
+            return None
+        if time.time() - self._liq_at > LIQ_CACHE_S:
+            self._liq, self._liq_at = collect_liq.stats(self.data_dir / "liq"), time.time()
+        return self._liq
+
     def _equity(self) -> float:
         return sum(b.equity(self.prices.get(s) or b.entry) for s, b in self.slots.items())
 

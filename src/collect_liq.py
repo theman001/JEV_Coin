@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import pathlib
+import time
 
 import aiohttp
 
@@ -34,6 +35,31 @@ def append(out_dir: pathlib.Path, r: dict) -> None:
     day = dt.datetime.fromtimestamp(r["t"] / 1000, dt.timezone.utc).strftime("%Y-%m-%d")
     with open(out_dir / f"{day}.jsonl", "a") as f:
         f.write(json.dumps(r) + "\n")
+
+
+def _times(path: pathlib.Path) -> list[int]:
+    out = []
+    try:
+        lines = path.read_text().splitlines()
+    except FileNotFoundError:
+        return out
+    for ln in lines:
+        try:
+            out.append(json.loads(ln)["t"])
+        except (ValueError, KeyError):
+            pass  # 수집기가 쓰는 중인 마지막 줄
+    return out
+
+
+def stats(out_dir: pathlib.Path, now: float | None = None) -> dict | None:
+    """수집 현황(웹 표시용): 오늘(UTC) 건수·최근 1시간 건수·마지막 수신 시각(초). 수집기가 한 번도 안 떴으면(폴더 없음) None."""
+    now = now or time.time()
+    if not out_dir.is_dir():
+        return None
+    day = lambda k: dt.datetime.fromtimestamp(now - k * 86400, dt.timezone.utc).strftime("%Y-%m-%d")
+    today, yesterday = _times(out_dir / f"{day(0)}.jsonl"), _times(out_dir / f"{day(1)}.jsonl")  # 자정 직후에도 '최근 1시간'이 맞게 어제 파일까지
+    allt = yesterday + today
+    return {"today": len(today), "last_hour": sum(t >= (now - 3600) * 1000 for t in allt), "last_ts": max(allt) / 1000 if allt else None}
 
 
 async def run(out_dir: pathlib.Path, url: str = URL, silence: float = SILENCE_S) -> None:

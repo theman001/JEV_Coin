@@ -43,7 +43,7 @@ h2{font-size:13px;margin:0 0 8px;color:var(--dim);font-weight:600}
 <body>
 <main>
 <header>
-  <h1>JEV Coin · 추세추종</h1><span class="badge">DRY-RUN (모의매매)</span><span id="rule" class="badge"></span><span id="tf" class="badge"></span>
+  <h1>JEV Coin · 추세추종</h1><span class="badge">DRY-RUN (모의매매)</span><span id="rule" class="badge"></span><span id="tf" class="badge"></span><span id="liq" class="badge"></span>
 </header>
 
 <div class="bar">
@@ -84,6 +84,7 @@ const sign = (v, d=2) => v == null ? "-" : (v > 0 ? "+" : "") + v.toFixed(d);
 const px = v => v == null ? "-" : v.toLocaleString("en-US", {maximumFractionDigits: v < 1 ? 5 : v < 100 ? 3 : 2});
 const won = v => v == null ? "-" : Math.round(v).toLocaleString("en-US");
 const stamp = ts => new Date(ts * 1000).toLocaleString("ko-KR", {hour12:false, month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit"});
+const ago = s => s < 90 ? Math.round(s) + "초" : s < 5400 ? Math.round(s / 60) + "분" : (s / 3600).toFixed(1) + "시간";
 const HOLD = h => h == null ? '<span class="dim">-</span>' : h ? '<span class="up">보유</span>' : '<span class="dim">현금</span>';
 let S = null, busy = false;
 
@@ -117,6 +118,10 @@ function render() {
   const age = S.polled_at ? S.now - S.polled_at : null;
   const stale = S.running && (age == null || age > S.poll_seconds * 3 + 30);
   $("rule").textContent = "규칙: " + S.rule; $("tf").textContent = S.timeframe + " 캔들";
+  const L = S.liq, liqAge = L && L.last_ts != null ? S.now - L.last_ts : null;  // 청산 수집(jev-liq): 전 시장 청산은 보통 수 초마다 오므로 10분 넘게 조용하면 의심
+  $("liq").textContent = !L ? "청산 수집: 없음" : liqAge == null ? "청산 수집: 수신 대기" : `청산 수집: 최근 1시간 ${L.last_hour.toLocaleString()}건 · 오늘 ${L.today.toLocaleString()}건 · ${ago(liqAge)} 전`;
+  $("liq").className = "badge" + (!L || liqAge == null || liqAge > 600 ? " warn" : "");
+  $("liq").title = !L ? "jev-liq 서비스가 /data/liq 를 아직 만들지 않았습니다 (미기동?)" : liqAge != null && liqAge > 600 ? "10분 넘게 청산 이벤트가 없습니다: 수집기 스트림 점검" : "";
   $("go").disabled = busy || S.running; $("halt").disabled = busy || !S.running;
   $("dot").className = "dot" + (S.running ? (stale ? " stale" : " on") : "");
   $("status").textContent = S.running ? (stale ? "실행 중 · 데이터 갱신 지연" : "실행 중") + (age != null ? ` · ${age.toFixed(0)}초 전 갱신` : "") : "일시정지";

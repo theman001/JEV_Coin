@@ -275,3 +275,35 @@ def test_main_rejects_unknown_mode(monkeypatch):
     monkeypatch.setenv("MODE", "nope")
     with pytest.raises(SystemExit):
         main_mod.main(["--once"])
+
+
+def test_snapshot_shows_liquidation_collector_status_with_cache(tmp_path):
+    """jev-liq 가 같은 볼륨에 쌓는 파일을 읽어 헤더에 표시. UI 가 2초마다 폴링해도 파일은 30초에 한 번만 읽는다."""
+    import src.collect_liq as cl
+    ex, e, _ = replay(1, data_dir=tmp_path)
+    assert e.snapshot()["liq"] is None  # 수집기 폴더 없음 → UI 는 '없음' 경고
+    (tmp_path / "liq").mkdir()
+    cl.append(tmp_path / "liq", {"t": int(time.time() * 1000) - 5000, "sym": "X", "side": "buy", "price": 1.0, "qty": 1.0, "usd": 1.0})
+    assert e.snapshot()["liq"] is None  # 캐시: 30초 안에는 다시 읽지 않는다
+    e._liq_at = 0.0
+    s = e.snapshot()
+    assert s["liq"]["today"] >= 1 and s["liq"]["last_hour"] == 1 and abs(s["liq"]["last_ts"] - (time.time() - 5)) < 3
+    json.dumps(s, allow_nan=False)
+
+
+@pytest.mark.parametrize("page", ["index.html", "trend.html"])
+def test_page_inline_js_has_no_syntax_errors(page, tmp_path):
+    """UI 스크립트 문법 오류는 페이지 전체를 죽인다 (const 중복 선언으로 실제 발생). node 가 없으면 건너뜀."""
+    import re
+    import shutil
+    import subprocess
+    from pathlib import Path
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not installed")
+    html = (Path(__file__).parent.parent / "src" / "static" / page).read_text()
+    js = re.search(r"<script>(.*?)</script>", html, re.S).group(1)
+    f = tmp_path / "page.js"
+    f.write_text(js)
+    r = subprocess.run([node, "--check", str(f)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr

@@ -97,3 +97,32 @@ def test_silent_stream_is_detected_warned_and_reconnected(tmp_path, monkeypatch,
     with caplog.at_level("WARNING"):
         asyncio.run(go())
     assert len(conns) >= 2 and "may be broken" in caplog.text
+
+
+# ── 수집 현황 (웹 표시용) ──
+def _row(t_s):
+    return {"t": int(t_s * 1000), "sym": "BTCUSDT", "side": "sell", "price": 1.0, "qty": 1.0, "usd": 1.0}
+
+
+def test_stats_counts_today_last_hour_and_last_ts(tmp_path):
+    now = 1790599939.0  # 2026-09-28 12:52 UTC
+    for ago in (10, 1800, 7200, 23 * 3600):  # 오늘 3건(그중 1시간 안 2건) + 어제 1건
+        cl.append(tmp_path, _row(now - ago))
+    s = cl.stats(tmp_path, now)
+    assert s == {"today": 3, "last_hour": 2, "last_ts": now - 10}
+
+
+def test_stats_last_hour_spans_midnight_and_skips_partial_line(tmp_path):
+    now = 1790553600.0 + 600  # 2026-09-28 00:10 UTC
+    cl.append(tmp_path, _row(now - 1200))  # 어제 23:50 — 오늘 파일이 아니지만 '최근 1시간'에는 들어가야 한다
+    cl.append(tmp_path, _row(now - 30))
+    with open(tmp_path / "2026-09-28.jsonl", "a") as f:
+        f.write('{"t": 17906')  # 수집기가 쓰는 중인 잘린 줄
+    s = cl.stats(tmp_path, now)
+    assert s == {"today": 1, "last_hour": 2, "last_ts": now - 30}
+
+
+def test_stats_none_without_collector_and_empty_before_first_event(tmp_path):
+    assert cl.stats(tmp_path / "liq", 1790599939.0) is None  # 수집기가 한 번도 안 뜸
+    (tmp_path / "liq").mkdir()
+    assert cl.stats(tmp_path / "liq", 1790599939.0) == {"today": 0, "last_hour": 0, "last_ts": None}  # 떴지만 아직 이벤트 없음

@@ -72,7 +72,7 @@ src/
               매 폴링 [손절 확인 → 지표 갱신] → 새 캔들 마감 시에만 Jev 판단 → policy → broker.
               네트워크(거래소/Jev) 호출은 락 밖, 돌아온 뒤 (실행 중 & 같은 코인) 재확인, 아니면 결과 폐기
   web.py      표준 라이브러리 HTTP 서버 + Basic 인증 + CSRF(JSON 콘텐츠 타입만 POST 허용). 의존성 추가 없음
-  trend.py    **MODE=trend** 추세추종 포트폴리오 모의 엔진(STRATEGY_RESEARCH.md §14): 4h SMA 20/50(strategies.sma_cross 재사용), 코인당 독립 슬롯(PaperBroker 재사용), 롱 전용·손절 없음, 캔들 마감 시에만 신호·저장(trend_state.json/trend.jsonl). 코인별 오류 격리(킬스위치 없음), 정지=일시정지(포지션 유지)
+  trend.py    **MODE=trend** 추세추종 포트폴리오 모의 엔진(STRATEGY_RESEARCH.md §14): 4h SMA 20/50(strategies.sma_cross 재사용), 코인당 독립 슬롯(PaperBroker 재사용), 롱 전용·손절 없음, 캔들 마감 시에만 신호·저장(trend_state.json/trend.jsonl). 코인별 오류 격리(킬스위치 없음), 정지=일시정지(포지션 유지). 스냅샷에 jev-liq 수집 현황(`collect_liq.stats`, 30초 캐시)을 실어 헤더 배지로 표시 — 10분 무수신이면 경고
   static/index.html   모니터링 UI (Jev 봇, 바닐라 JS, 2초 폴링) · static/trend.html 추세추종 UI (엔진의 page 속성으로 web.py 가 선택)
   main.py     엔트리: 엔진 스레드 + 웹. `MODE=jev`(기본)|`trend`. `--once` 는 웹 없이 폴링 1회 (Jev 연결 확인용). 모드별 기본값(코인·거래소·주기·자본)은 DEFAULTS
 Dockerfile · docker-compose.example.yml(템플릿, 추적; 서비스 3개: jev-coin·jev-trend·jev-liq) · docker-compose.yml(**비밀값 하드코딩, .gitignore**) · .env.example · .dockerignore   ARM64/OMV 배포
@@ -185,6 +185,7 @@ DATA_DIR=data .venv/bin/python -m src.collect_liq
 - 구현 검증: 캔들 단위 리플레이로 **매 봉 포지션이 백테스트 신호와 정확히 일치**하고 최종 자산이 `simulate` 와 상대오차 2e-3 이내로 일치. 변이 12개 검출. 실데이터(Upbit) `--once` + 웹 E2E + SIGTERM 재시작 복원 확인.
 - 참고 백테스트(사후 부분집합·생존 편향, 증거 아님): Upbit 4h 2022-02~ 5코인 — SMA 20/50 연 32.3%·샤프 1.11·MDD -33.5% vs 단순 보유 20.3%·0.61·-61.5%. 더 정직한 사전 기대는 79코인 결과(§10).
 - **판정은 6개월 이상·완결 거래 50건 이상일 때 1회**(1차 지표: 동일가중 단순 보유 대비 MDD). 그 전에는 결과를 성과로 주장하지 않는다. 리포트에 국면(BTC 방향)·단순 보유를 병기.
+- UI 스크립트 문법 오류는 페이지 전체를 죽인다(const 중복 선언으로 실제 발생) → `test_page_inline_js_has_no_syntax_errors`(node --check)와 headless 렌더 확인을 UI 수정 때마다 할 것.
 - 기록: `/data/trend_state.json`(곡선·낙폭 포함), `/data/trend.jsonl`(캔들 마감마다 코인별 신호·체결 지연 `lag_s`). 웹 :8788.
 - 실거래 아님: 갭·슬리피지 대응 손절, 주문 재조회, 한도, 웹 인증 강화가 선행(Backlog).
 
