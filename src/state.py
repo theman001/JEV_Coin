@@ -13,6 +13,11 @@ def _bucket(x: float, lo: float, hi: float, names: tuple[str, str, str]) -> str:
     return names[0] if x < lo else names[2] if x > hi else names[1]
 
 
+def _ratio(a: float, b: float) -> float:
+    """a / b. 분모가 0 이면 (0/0 → 0: 둘 다 죽은 시장 = 낮음/얇음, x/0 → inf: 평소엔 없던 활동). NaN 이 라벨에서 조용히 'normal' 이 되는 걸 막는다 (1초봉은 거래 없는 구간이 흔하다)."""
+    return a / b if b else (float("inf") if a else 0.0)
+
+
 def indicators(df: pd.DataFrame) -> dict:
     """마지막 마감 캔들 기준 수치 지표 (웹 표시 + 라벨 계산용). Jev에는 직접 전달하지 않는다."""
     if len(df) < MIN_BARS:
@@ -25,8 +30,8 @@ def indicators(df: pd.DataFrame) -> dict:
         "ema50": EMAIndicator(close, 50).ema_indicator().iloc[-1],
         "rsi": RSIIndicator(close, 14).rsi().iloc[-1],
         "atr_pct": atr_pct.iloc[-1],
-        "volatility_ratio": atr_pct.iloc[-1] / atr_pct.iloc[-50:].median(),  # 최근 변동성 vs 자기 평소
-        "volume_ratio": df["volume"].iloc[-1] / df["volume"].iloc[-21:-1].median(),  # 직전 봉 vs 최근 20봉 중앙값
+        "volatility_ratio": _ratio(atr_pct.iloc[-1], atr_pct.iloc[-50:].median()),  # 최근 변동성 vs 자기 평소
+        "volume_ratio": _ratio(df["volume"].iloc[-1], df["volume"].iloc[-21:-1].median()),  # 직전 봉 vs 최근 20봉 중앙값
         "return_3_bars_pct": (close.iloc[-1] / close.iloc[-4] - 1) * 100,
         "return_24_bars_pct": (close.iloc[-1] / close.iloc[-25] - 1) * 100,
     }

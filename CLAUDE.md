@@ -32,6 +32,7 @@ ATR% 중앙값 vs 왕복 비용(테이커 0.05%×2 + 슬리피지 가정 0.04% =
 
 - **BTC/ETH 1~5분봉은 평균 변동폭이 왕복 비용보다 작다** → 수수료 게이트(`volatility_covers_costs`)가 대부분 진입을 막는다. 이는 버그가 아니라 의도된 동작. 수수료 등급(메이커/VIP)이 좋아지거나 더 긴 봉/변동성 큰 심볼을 써야 한다.
 - 기본값: `SOL/USDT`, `5m`.
+- **1초봉(Binance 현물 `1s`, 2026-09-28 실측 1000봉)**: ATR%(14) 중앙값 BTC 0.005 / ETH 0.008 / SOL 0.012 / XRP 0.020 / DOGE 0.022%, 최대 0.026~0.064% → **모두 왕복 비용 0.14% 의 절반 미만이라 비용 게이트가 진입을 전부 막는다**(1초봉 |수익률| 중앙값 0.002~0.013%, 거래 없는 봉 2~12%). 1초봉 서비스(`jev-1s`)는 이 상태를 보여주는 용도이며 거래가 없는 게 정상이다.
 
 Jev 상세 스펙·한계는 [JEV_AI_GUIDE.md](JEV_AI_GUIDE.md)를 먼저 읽을 것.
 
@@ -74,8 +75,8 @@ src/
   web.py      표준 라이브러리 HTTP 서버 + Basic 인증 + CSRF(JSON 콘텐츠 타입만 POST 허용). 의존성 추가 없음
   trend.py    **MODE=trend** 추세추종 포트폴리오 모의 엔진(STRATEGY_RESEARCH.md §14): 4h SMA 20/50(strategies.sma_cross 재사용), 코인당 독립 슬롯(PaperBroker 재사용), 롱 전용·손절 없음, 캔들 마감 시에만 신호·저장(trend_state.json/trend.jsonl). 코인별 오류 격리(킬스위치 없음), 정지=일시정지(포지션 유지). 스냅샷에 jev-liq 수집 현황(`collect_liq.stats`, 30초 캐시)을 실어 헤더 배지로 표시 — 10분 무수신이면 경고
   static/index.html   모니터링 UI (Jev 봇, 바닐라 JS, 2초 폴링) · static/trend.html 추세추종 UI (엔진의 page 속성으로 web.py 가 선택)
-  main.py     엔트리: 엔진 스레드 + 웹. `MODE=jev`(기본)|`trend`. `--once` 는 웹 없이 폴링 1회 (Jev 연결 확인용). 모드별 기본값(코인·거래소·주기·자본)은 DEFAULTS
-Dockerfile · docker-compose.example.yml(템플릿, 추적; 서비스 3개: jev-coin·jev-trend·jev-liq) · docker-compose.yml(**비밀값 하드코딩, .gitignore**) · .env.example · .dockerignore   ARM64/OMV 배포
+  main.py     엔트리: 엔진 스레드 + 웹. `MODE=jev`(기본)|`trend`. `JUDGE_GATED=0`(1초봉): 비용 게이트에 막힌 코인은 Jev 미호출. `--once` 는 웹 없이 폴링 1회 (Jev 연결 확인용). 모드별 기본값(코인·거래소·주기·자본)은 DEFAULTS
+Dockerfile · docker-compose.example.yml(템플릿, 추적; 서비스 4개: jev-coin·jev-1s·jev-trend·jev-liq) · docker-compose.yml(**비밀값 하드코딩, .gitignore**) · .env.example · .dockerignore   ARM64/OMV 배포
 tests/        정책·state·브로커·엔진·웹·SDK 경로 테스트 (Jev/거래소 호출 없이 동작해야 함)
 ```
 
@@ -113,12 +114,12 @@ set -a; . ./.env; set +a; .venv/bin/python -m src.backtest --tfs 4h 1d --jev-tfs
 DATA_DIR=data .venv/bin/python -m src.collect_liq
 ```
 
-환경변수는 전부 [.env.example](.env.example) 에 있다: `TYPESAFE_API_KEY`, `WEB_USER`, `WEB_PASSWORD`, `WEB_PORT`(호스트 포트), `SYMBOLS`, `TIMEFRAME`, `EXCHANGE`, `POLL_SECONDS`, 추세추종용 `TREND_PORT`(8788)·`TREND_EQUITY`(원, 기본 1,000,000). 앱 내부: `MODE`(jev|trend, compose 가 서비스별로 지정). 앱 내부 전용: `DATA_DIR`(기본 `data`, 컨테이너 `/data`), `PORT`(8787). 거래소 API 키는 실주문을 구현하지 않았으므로 아직 없다.
+환경변수는 전부 [.env.example](.env.example) 에 있다: `TYPESAFE_API_KEY`, `WEB_USER`, `WEB_PASSWORD`, `WEB_PORT`(호스트 포트), `SYMBOLS`, `TIMEFRAME`, `EXCHANGE`, `POLL_SECONDS`, 1초봉용 `PORT_1S`(8786), 추세추종용 `TREND_PORT`(8788)·`TREND_EQUITY`(원, 기본 1,000,000). 앱 내부: `MODE`(jev|trend), `JUDGE_GATED`(기본 1), `DATA_DIR` — compose 가 서비스별로 지정. 앱 내부 전용: `DATA_DIR`(기본 `data`, 컨테이너 `/data`), `PORT`(8787). 거래소 API 키는 실주문을 구현하지 않았으므로 아직 없다.
 `.env` 는 `.gitignore`·`.dockerignore` 대상. **사용자가 실제 키를 넣은 `.env` 가 프로젝트 루트에 있다 — 내용을 출력/로그/커밋하지 말 것.**
 
 ## 배포 (Radxa Rock 5 / OMV8 / Docker)
 
-- **서비스 3개**(같은 이미지·볼륨 `jev-data`, 파일명 분리): `jev-coin`(:8787 Jev 봇) · `jev-trend`(:8788 추세추종, `MODE=trend`, 규칙·코인·주기는 사전 고정 설계라 compose 에 고정) · `jev-liq`(청산 수집, 포트 없음). 세 서비스 모두 `x-app` 앵커로 같은 `build` 를 가진다. 런타임 의존성 37개가 aarch64 cp314 휠로 존재함을 `pip download --platform` 으로 확인(`ta` 제외, 순수 sdist).
+- **서비스 4개**(같은 이미지·볼륨 `jev-data`, 파일명 분리): `jev-coin`(:8787 Jev 봇 5m) · `jev-1s`(:8786 같은 봇의 1초봉, `TIMEFRAME=1s POLL_SECONDS=1 JUDGE_GATED=0`, `DATA_DIR=/data/1s` 로 상태 파일 분리) · `jev-trend`(:8788 추세추종, `MODE=trend`, 규칙·코인·주기는 사전 고정 설계라 compose 에 고정) · `jev-liq`(청산 수집, 포트 없음). 세 서비스 모두 `x-app` 앵커로 같은 `build` 를 가진다. 런타임 의존성 37개가 aarch64 cp314 휠로 존재함을 `pip download --platform` 으로 확인(`ta` 제외, 순수 sdist).
 - 사용자는 compose 파일을 OMV compose 플러그인에 붙여넣고 Up 한다. `build.context` 는 **git URL** (`https://github.com/theman001/JEV_Coin.git#main`) → 저장소에 Dockerfile 이 있어야 한다.
 - **`docker-compose.yml` 은 `.env` 값이 하드코딩된 로컬 전용 파일 (`.gitignore`, `.dockerignore`). 절대 커밋/출력/로그하지 말 것.** 추적되는 템플릿은 `docker-compose.example.yml` 이고, 값 변경 시 둘을 함께 유지한다. 저장소는 Public 이라 비밀값이 한 번 push 되면 회수가 어렵다 — 커밋 전 `git grep --cached -F <값>` 로 확인.
 - 템플릿은 `environment:` 의 `${VAR}` 치환 방식 (OMV 플러그인은 `.env` 를 `<이름>.env` 로 두고 `--env-file` 로 넘긴다 → `env_file:` 은 쓰지 않는다). `WEB_PASSWORD` 는 `${...:?}` 로 필수 지정. 하드코딩 시 값의 `$` 는 `$$` 로 이스케이프.
@@ -132,7 +133,7 @@ DATA_DIR=data .venv/bin/python -m src.collect_liq
 |---|---|
 | Jev 429/타임아웃/5xx | SDK 재시도(기본 2회) 후 실패 시 이번 틱 **관망**, 로그 남김 |
 | Jev confidence 낮음 / Noul ≈ 0.5 | 진입 안 함 또는 사이즈 축소 |
-| 거래소 데이터 조회 실패 / 캔들이 오래됨 | 이번 틱 건너뜀 (stale state 금지) |
+| 거래소 데이터 조회 실패 / 캔들이 오래됨 | 이번 틱 건너뜀 (stale state 금지). stale 기준은 캔들 주기의 1.5배이되 최소 5초(1초봉은 마지막 닫힌 봉이 ~1.3초 늦는 게 정상) |
 | 리스크 한도 초과 | 신규 진입 차단, 보유 포지션은 청산 우선 |
 | 진입가 대비 -0.5% (`STOP_LOSS_PCT`) | 캔들 마감/Jev 판단을 기다리지 않고 폴링 시점에 즉시 청산 (코인별) |
 | 포트폴리오 세션 손실 ≥ 5% (`MAX_SESSION_LOSS`) | Jev 판단을 기다리지 않고 폴링 시점에 전 코인 즉시 청산, 이후 신규 진입 차단 |
@@ -148,6 +149,7 @@ DATA_DIR=data .venv/bin/python -m src.collect_liq
 
 - **Jev SDK 확정 사항** (typesafe-sdk 0.7.2, 설치본에서 직접 확인): 응답은 `resp.answers[name]` 로 접근 (`.choice/.confidence/.probabilities`, `.noul`, `.score`). `resp.choices/nouls/scores` 도 동일 객체를 준다. 예외는 `TypeSafeError` 계열(`TypeSafeRateLimitError`, `TypeSafeAPITimeoutError` 등). 기본 재시도 2회. 테스트는 `TypeSafeClient(transport=httpx2.MockTransport(...))` 로 네트워크 없이 SDK 경로를 통과시킨다.
 - **실서버 E2E 검증 완료** (2026-09-28, 실제 Jev 키 + Binance 실데이터, 웹 API로 구동): Jev 호출 7회 전부 200 (202~267ms), 호출 수 == 판단 수(폴링 중 호출 없음), 캔들 마감 시 정확히 +1회, 5개 코인 전환·청산·정책 게이트(BTC 비용 게이트) 정상, 회계 항등식 유지, 종가/EMA/RSI 를 pandas 로 독립 계산해 소수점까지 일치, 서버 로그 WARNING/ERROR 0건.
+- **1초봉 E2E** (2026-09-28, 실제 Binance 1초 캔들, 가짜 Jev 키로 호출 유무 검증): 12초간 캔들이 1초마다 놓침 없이 갱신, stale 오탐 0/12, **Jev 호출 0회**(호출됐다면 실패 경고가 찍혔을 것), 디스크는 시작 시 상태 파일 1개뿐. 폴링당 지표 계산 5코인 약 40ms. 1초봉 데이터엔 거래량 0·가격 불변 구간이 흔해 `state._ratio` 가 0/0 을 NaN 대신 0(낮음/얇음)으로 처리한다.
 - **멀티코인 E2E** (2026-09-28, 실제 Jev 키 + Binance 실데이터): 5코인을 동시에 판단(5회 병렬 호출, 경고 0건), 판단 5행 기록, 중지 시 DOGE 숏 청산·상태 저장 확인. 코인당 최대 노출은 슬롯의 25%=전체의 5%라 손익이 작게 보이고(왕복 0.14% → 전체 -0.007%) 5% 손실 한도는 사실상 안전망이다.
 - **실서버에서 아직 못 본 것**: 손절 실발동(단위테스트만), 수 시간 이상 장기 가동, Jev 실장애/킬스위치 실발동(모의로만), 여러 캔들에 걸친 판단 추이. OMV 첫 가동 후 판단 이력(`/data/judgments.jsonl`)과 웹으로 확인할 것.
 - 검증 중 코인 전환으로 강제 청산한 모의거래는 전부 비용만큼 손실(-0.14%/건)이었다 — 전략 성과가 아니라 테스트 부산물이므로 성과 평가에 쓰지 말 것 (실제 계정 상태는 임시 DATA_DIR 이라 남지 않음).

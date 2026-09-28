@@ -307,3 +307,21 @@ def test_page_inline_js_has_no_syntax_errors(page, tmp_path):
     f.write_text(js)
     r = subprocess.run([node, "--check", str(f)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+@pytest.mark.parametrize("env,expect", [(None, True), ("0", False), ("1", True)])
+def test_main_wires_judge_gated_from_env(monkeypatch, env, expect):
+    ex, seen = Replay({s: walk(1, 300) for s in ("A/USDT", "B/USDT")}), {}
+    real = main_mod.Engine
+    monkeypatch.setattr(main_mod, "Engine", lambda *a, **k: (seen.update(k), real(*a, **k))[1])
+    monkeypatch.setattr(main_mod, "make_exchange", lambda name: ex)
+    ex.parse_timeframe = lambda tf: 300
+    monkeypatch.setenv("MODE", "jev")
+    monkeypatch.setenv("SYMBOLS", "A/USDT,B/USDT")
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.delenv("JUDGE_GATED", raising=False)
+    if env is not None:
+        monkeypatch.setenv("JUDGE_GATED", env)
+    with redirect_stdout(io.StringIO()):
+        assert main_mod.main(["--once"]) == 0
+    assert seen["judge_gated"] is expect

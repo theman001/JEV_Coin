@@ -60,6 +60,21 @@ def test_state_uptrend_and_min_bars():
         build_state(candles(30), "BTC/USDT", "1h")
 
 
+def test_state_labels_for_a_dead_market_are_low_and_thin_not_normal():
+    """가격 불변·거래량 0 (1초봉에서 흔함): 0/0 이 NaN 이 되어 라벨이 조용히 'normal' 이 되면 안 되고, 경고도 없어야 한다."""
+    import warnings
+    n = 120
+    dead = pd.DataFrame({"ts": np.arange(n) * 1000, "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0, "volume": 0.0})
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        st = build_state(dead, "X/USDT", "1s")
+        woke = dead.copy()
+        woke.loc[n - 1, "volume"] = 5.0  # 죽어 있던 시장에 갑자기 체결이 생김 → x/0 = inf → spike
+        spike = build_state(woke, "X/USDT", "1s")
+    assert st["volatility"] == "low" and st["volume"] == "thin" and st["volatility_covers_costs"] is False
+    assert spike["volume"] == "spike"
+
+
 def test_state_position_labels_and_cost_gate():
     df = candles()
     assert build_state(df, "X", "1h", ("long", 0.5))["position_pnl"] == "profitable"
@@ -170,6 +185,24 @@ def test_fetch_drops_open_candle_and_flags_stale():
     late = candles(end_ms=now_ms - int(2.6 * HOUR_MS))  # 1.6캔들: 진짜 stale
     with pytest.raises(StaleData):
         fetch_closed(StubExchange(late), "X", "1h", limit=len(late))
+
+
+def test_stale_check_has_a_floor_for_one_second_candles():
+    """1초봉: 마지막 닫힌 봉이 1.3초 늦는 건 정상(실측)인데 배수(1.5초)만 쓰면 자주 오탐한다 → 최소 5초."""
+    class OneSec(StubExchange):
+        def parse_timeframe(self, tf):
+            return 1
+
+    def sec_candles(age_ms, n=60):
+        ts = int(time.time() * 1000) - age_ms - 1000 - 1000 * np.arange(n)[::-1]  # 마지막 닫힌 봉이 age_ms 전에 마감
+        c = 100 + np.zeros(n)
+        return pd.DataFrame({"ts": ts, "open": c, "high": c, "low": c, "close": c, "volume": 1.0})
+
+    ok = sec_candles(3_000)  # 3초 전 마감: 1.5초 규칙이면 stale 이지만 정상
+    assert len(fetch_closed(OneSec(ok), "X", "1s", limit=len(ok))) == len(ok)
+    late = sec_candles(8_000)
+    with pytest.raises(StaleData):
+        fetch_closed(OneSec(late), "X", "1s", limit=len(late))
 
 
 def test_broker_trade_record_is_net_of_costs():
@@ -318,6 +351,72 @@ def test_engine_error_counter_resets_when_a_coin_recovers(tmp_path):
     for _ in range(MAX_CONSECUTIVE_ERRORS - 1):
         e.step()
     assert sides(e) == ["long", "long"]  # 연속 오류가 아니면 청산하지 않는다
+
+
+def quiet_candles(end_ms=None, n=120):
+    """변동폭이 왕복 비용(0.14%)보다 훨씬 작은 캔들 (1초봉의 현실): ATR% ≈ 0.001% → 비용 게이트 차단."""
+    end_ms = end_ms or (int(time.time() * 1000) // HOUR_MS - 1) * HOUR_MS
+    close = 100 + 0.001 * np.sin(np.arange(n))
+    ts = end_ms - HOUR_MS * np.arange(n)[::-1]
+    return pd.DataFrame({"ts": ts, "open": close, "high": close + 0.0005, "low": close - 0.0005, "close": close, "volume": 1.0})
+
+
+def test_gated_coins_still_get_a_jev_judgment_by_default(tmp_path):
+    """기본(5분봉 봇)은 게이트에 막혀도 판단을 부르고 기록한다 (보정 분석용 원자료). 진입만 게이트가 막는다."""
+    j = Scripted()
+    e = engine(tmp_path, j, StubExchange(quiet_candles()))
+    e.start()
+    e.step()
+    assert j.calls == 2 and sides(e) == ["flat", "flat"] and "below trading costs" in e.judgments[-1]["reason"]
+
+
+def test_judge_gated_false_skips_jev_and_disk_when_cost_gate_blocks(tmp_path):
+    j = Scripted()
+    e = Engine(StubExchange(quiet_candles()), j, list(SYMS), timeframe="1h", interval=0.01, data_dir=tmp_path, equity=1000.0, judge_gated=False)
+    e.start()
+    saves = []
+    e._save = lambda: saves.append(1)
+    for _ in range(3):
+        e.step()
+    assert j.calls == 0 and sides(e) == ["flat", "flat"] and not e.judgments and not saves  # Jev 미호출, 기록·저장 없음
+    assert set(e.last_ts) == set(SYMS)  # 캔들은 소비 처리 (같은 캔들을 폴링마다 다시 계산하지 않는다)
+    assert all(c["judgment"] is None and c["state"]["volatility_covers_costs"] is False for c in e.snapshot()["coins"])
+
+
+def test_judge_gated_false_still_judges_when_gate_passes_and_closes_open_position_when_gate_shuts(tmp_path):
+    j, ex = Scripted(), StubExchange(candles())
+    e = Engine(ex, j, list(SYMS), timeframe="1h", interval=0.01, data_dir=tmp_path, equity=1000.0, judge_gated=False)
+    e.start()
+    e.step()
+    assert j.calls == 2 and sides(e) == ["long", "long"]  # 게이트 통과 → 정상 판단
+    ex.rows = quiet_candles(end_ms=(int(time.time() * 1000) // HOUR_MS) * HOUR_MS).values.tolist()  # 다음 캔들: 변동폭이 비용 밑으로
+    e.step()
+    assert j.calls == 2 and sides(e) == ["flat", "flat"]  # Jev 를 부르지 않고 포지션 정리
+    assert [r["kind"] for r in list(e.judgments)[-2:]] == ["gate_flat", "gate_flat"] and e.slots["X/USDT"].n_trades == 1
+    assert all(c["judgment"] is None for c in e.snapshot()["coins"])  # 화면에 옛 판단이 남아 현재 상태처럼 보이면 안 된다
+
+
+def test_engine_survives_dead_flat_market_with_zero_volume(tmp_path):
+    """1초봉에선 거래 없는 구간이 흔하다: 가격 불변·거래량 0 이어도 지표가 NaN/0 나눗셈으로 엔진을 죽이면 안 된다."""
+    n = 120
+    df = pd.DataFrame({"ts": (int(time.time() * 1000) // HOUR_MS - 1) * HOUR_MS - HOUR_MS * np.arange(n)[::-1], "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0, "volume": 0.0})
+    e = Engine(StubExchange(df), Scripted(), list(SYMS), timeframe="1h", interval=0.01, data_dir=tmp_path, equity=1000.0, judge_gated=False)
+    e.start()
+    e.step()
+    assert e.error is None and sides(e) == ["flat", "flat"]
+    json.dumps(e.snapshot(), allow_nan=False)
+
+
+def test_run_forever_is_fixed_rate_so_one_second_candles_are_not_missed(tmp_path):
+    """폴링에 걸린 시간을 sleep 에서 빼야 한다 (interval 0.1, step 0.06 → 주기 0.1: 1초에 ~10회. 단순 sleep 이면 0.16 → ~6회)."""
+    e = engine(tmp_path)
+    e.interval, calls = 0.1, []
+    e.step = lambda: (calls.append(1), time.sleep(0.06))
+    e.running = True
+    threading.Thread(target=e.run_forever, daemon=True).start()
+    time.sleep(1.0)
+    e.running = False
+    assert len(calls) >= 8
 
 
 def test_engine_writes_disk_only_when_state_changes(tmp_path):

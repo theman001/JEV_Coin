@@ -16,6 +16,7 @@ from pathlib import Path
 
 from .broker import PaperBroker
 from .data import StaleData, fetch_closed
+from .judge import SAFE
 from .policy import MAX_SESSION_LOSS, STOP_LOSS_PCT, Signal, decide
 from .state import build_state, indicators
 
@@ -27,8 +28,10 @@ class Engine:
     page = "index.html"
 
     def __init__(self, ex, judge, symbols: list[str], timeframe: str = "5m", interval: float = 10, data_dir=None,
-                 equity: float = 100.0):
+                 equity: float = 100.0, judge_gated: bool = True):
+        """judge_gated=False: 비용 게이트에 막힌 코인은 Jev 를 부르지 않는다 (결과가 어차피 쓰이지 않는다 — decide 가 게이트를 먼저 적용). 1초봉처럼 호출이 폭증하는 주기용."""
         self.ex, self.judge, self.symbols, self.timeframe, self.interval = ex, judge, list(symbols), timeframe, interval
+        self.judge_gated = judge_gated
         self.data_dir = Path(data_dir) if data_dir else None
         self.lock = threading.RLock()
         self.start_equity = equity
@@ -65,13 +68,14 @@ class Engine:
     # ---------- 루프 (엔진 스레드) ----------
     def run_forever(self) -> None:
         while True:
+            t0 = time.time()
             if self.running:
                 try:
                     self.step()
                 except Exception as e:  # step 은 코인별로 예외를 흡수한다. 방어용
                     log.exception("step failed")
                     self.error = f"{type(e).__name__}: {e}"
-            time.sleep(self.interval)
+            time.sleep(max(0.0, self.interval - (time.time() - t0)))  # 고정 주기: 폴링 소요 시간을 빼서 1초봉을 놓치지 않는다
 
     def step(self) -> None:
         """폴링 1회: ① 코인별 [가격 → 손절 → 지표] (Jev 호출 없음) ② 새 캔들이 마감된 코인만 Jev 판단을 병렬로 ③ 정책 → 주문 ④ 포트폴리오 리스크 확인.
@@ -124,6 +128,16 @@ class Engine:
             if stopped:  # 손절 직후엔 이 캔들에서 재진입하지 않는다 (휩쏘 반복 방지)
                 self.last_ts[sym] = ts
             elif ts != self.last_ts.get(sym):
+                if not self.judge_gated and not st["volatility_covers_costs"]:
+                    sig = decide(SAFE, self._loss(), False)  # 어차피 flat (게이트가 최우선): Jev 호출·판단 기록을 건너뛴다
+                    was = b.side
+                    b.rebalance(sig, price)
+                    self.last_ts[sym] = ts
+                    self.last_j.pop(sym, None)
+                    if was != b.side:  # 보유 중이던 포지션이 게이트로 청산된 경우만 기록 (1초봉에서 디스크를 초당 수십 번 쓰지 않게)
+                        self._record(sym, "gate_flat", price, reason=sig.reason)
+                        self._save()
+                    return None
                 return {"sym": sym, "ts": ts, "price": price, "state": st}
         return None
 
