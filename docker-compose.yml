@@ -1,0 +1,37 @@
+# 이 파일 하나만 OMV(또는 아무 Docker 호스트)의 compose 에 붙여넣고 Up 하면 git 에서 소스를 받아 빌드 → 실행까지 됩니다.
+# 1) build.context 는 GitHub 저장소 theman001/JEV_Coin (Public). 비공개로 바꾸면 https://<TOKEN>@github.com/... 형태로 써야 합니다.
+# 2) 환경변수는 .env.example 를 참고해 compose 의 .env 에 입력 (아래 ${...} 로 치환됨)
+# 참고: 빌드하려면 Docker 호스트에 git 이 필요합니다 (없으면: apt install git).
+#       코드를 업데이트한 뒤에는 Up 만으로는 재빌드되지 않습니다 → OMV 의 "Build"(또는 "Pull and build") 후 Up.
+name: jev-coin
+
+services:
+  jev-coin:
+    build:
+      context: https://github.com/theman001/JEV_Coin.git#main
+      # 로컬 개발 시에는 위 줄 대신:  context: .
+    image: jev-coin:latest
+    container_name: jev-coin
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${WEB_PORT:-8787}:8787"
+    environment:
+      TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
+      WEB_USER: ${WEB_USER:-admin}
+      WEB_PASSWORD: ${WEB_PASSWORD:?.env 에 WEB_PASSWORD 를 설정하세요}
+      SYMBOLS: ${SYMBOLS:-SOL/USDT,ETH/USDT,BTC/USDT,XRP/USDT,DOGE/USDT}
+      TIMEFRAME: ${TIMEFRAME:-5m}
+      EXCHANGE: ${EXCHANGE:-binance}
+      POLL_SECONDS: ${POLL_SECONDS:-10}
+    volumes:
+      - jev-data:/data # 모의계좌 상태·판단 이력(judgments.jsonl). 재시작/재빌드해도 유지
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8787/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  jev-data:
