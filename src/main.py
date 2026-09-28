@@ -33,6 +33,7 @@ def main(argv=None) -> int:
     engine = Engine(
         make_exchange(os.getenv("EXCHANGE", "binance")), judge, symbols,
         timeframe=os.getenv("TIMEFRAME", "5m"), interval=float(os.getenv("POLL_SECONDS", "10")),
+        equity=float(os.getenv("PAPER_EQUITY", "100")),
         data_dir=None if args.once else os.getenv("DATA_DIR", "data"),
     )
     if args.symbol:

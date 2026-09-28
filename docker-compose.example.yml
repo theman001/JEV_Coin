@@ -25,6 +25,8 @@ services:
       TIMEFRAME: ${TIMEFRAME:-5m}
       EXCHANGE: ${EXCHANGE:-binance}
       POLL_SECONDS: ${POLL_SECONDS:-10}
+      PAPER_EQUITY: ${PAPER_EQUITY:-100}
+      TZ: ${TZ:-Asia/Seoul}
     volumes:
       - jev-data:/data # 모의계좌 상태·판단 이력(judgments.jsonl). 재시작/재빌드해도 유지
     healthcheck:

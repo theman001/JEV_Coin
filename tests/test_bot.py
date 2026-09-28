@@ -161,6 +161,12 @@ def test_fetch_drops_open_candle_and_flags_stale():
     old = candles(end_ms=(int(time.time() * 1000) // HOUR_MS - 10) * HOUR_MS)
     with pytest.raises(StaleData):
         fetch_closed(StubExchange(old), "X", "1h", limit=len(old))
+    now_ms = int(time.time() * 1000)
+    lag = candles(end_ms=now_ms - int(2.2 * HOUR_MS))  # 마감 후 1.2캔들: 마감 직후 거래소 지연 → 오탐하면 안 됨
+    assert len(fetch_closed(StubExchange(lag), "X", "1h", limit=len(lag))) == len(lag)
+    late = candles(end_ms=now_ms - int(2.6 * HOUR_MS))  # 1.6캔들: 진짜 stale
+    with pytest.raises(StaleData):
+        fetch_closed(StubExchange(late), "X", "1h", limit=len(late))
 
 
 def test_broker_trade_record_is_net_of_costs():

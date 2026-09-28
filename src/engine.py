@@ -22,12 +22,13 @@ MAX_CONSECUTIVE_ERRORS = 5  # 넘으면 킬스위치 (청산 후 정지)
 
 
 class Engine:
-    def __init__(self, ex, judge, symbols: list[str], timeframe: str = "5m", interval: float = 10, data_dir=None):
+    def __init__(self, ex, judge, symbols: list[str], timeframe: str = "5m", interval: float = 10, data_dir=None,
+                 equity: float = 100.0):
         self.ex, self.judge, self.symbols, self.timeframe, self.interval = ex, judge, list(symbols), timeframe, interval
         self.data_dir = Path(data_dir) if data_dir else None
         self.lock = threading.RLock()
         self.symbol, self.running = self.symbols[0], False
-        self.broker = PaperBroker()
+        self.broker = PaperBroker(equity)
         self.broker.symbol = self.symbol
         self.price = self.polled_at = self.last_ts = self.error = None
         self.ind, self.state = {}, {}
@@ -156,6 +157,7 @@ class Engine:
 
     def _record(self, kind: str, price: float, j=None, sig=None, reason: str = "") -> None:
         row = {"ts": time.time(), "kind": kind, "symbol": self.symbol, "price": price,
+               "candle_ts": self.last_ts and self.last_ts / 1000,  # 판단 근거가 된 마지막 마감 캔들의 시작 시각(초)
                "position": self.broker.side, "equity": self.broker.equity(price), "reason": reason}
         if j and sig:
             row |= {"side": j.side, "confidence": j.confidence, "reversal_risk": j.reversal_risk, "source": j.source,
