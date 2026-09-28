@@ -31,25 +31,99 @@ JEV_THRESHOLD = 0.5  # 사전 고정. 조정 금지
 
 
 # ───────────── 데이터 ─────────────
-def load(sym: str, tf: str, years: int = 5, ex=None) -> pd.DataFrame:
+STABLES = {"USDT", "USDC", "DAI", "TUSD", "USDD", "FDUSD", "USDE"}
+DAY_MS = 86_400_000
+
+
+def _fetch(ex, sym: str, tf: str, since: int, limit: int) -> list:
+    import ccxt
+    for k in range(6):  # 네트워크·레이트리밋 오류는 지수 백오프로 재시도
+        try:
+            return ex.fetch_ohlcv(sym, tf, since=since, limit=limit)
+        except ccxt.NetworkError:
+            time.sleep(0.5 * 2 ** k)
+    raise RuntimeError(f"fetch_ohlcv 반복 실패: {sym} {tf}")
+
+
+def regularize(df: pd.DataFrame, step_ms: int) -> pd.DataFrame:
+    """무거래 봉(업비트는 캔들을 생략한다)을 직전 종가·거래량 0 으로 채워 등간격으로 만든다."""
+    full = pd.DataFrame({"ts": np.arange(int(df["ts"].iloc[0]), int(df["ts"].iloc[-1]) + 1, step_ms)})
+    m = full.merge(df, on="ts", how="left")
+    m["close"] = m["close"].ffill()
+    for c in ("open", "high", "low"):
+        m[c] = m[c].fillna(m["close"])
+    m["volume"] = m["volume"].fillna(0.0)
+    return m
+
+
+def load(sym: str, tf: str, years: int = 5, ex=None, limit: int = 1000, fill: bool = False) -> pd.DataFrame:
+    """마감된 캔들만. 시간 기준 페이지네이션(since += limit×주기)이라 캔들 누락에도 안전하다. fill=True 면 누락 봉을 채운다."""
     path = DATA / "candles" / f"{sym.replace('/', '_')}_{tf}.csv"
     if path.exists() and time.time() - path.stat().st_mtime < 12 * 3600:  # 12시간 캐시
         return pd.read_csv(path)
     ex = ex or make_exchange()
-    ms, since, rows = ex.parse_timeframe(tf) * 1000, int(time.time() * 1000 - years * 365 * 86_400_000), []
-    while True:
-        r = ex.fetch_ohlcv(sym, tf, since=since, limit=1000)
-        if not r:
-            break
-        rows += r
-        since = r[-1][0] + ms
-        if len(r) < 1000:
-            break
-    df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "volume"]).drop_duplicates("ts").iloc[:-1]
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ms, now, rows = ex.parse_timeframe(tf) * 1000, int(time.time() * 1000), []
+    since = now - years * 365 * DAY_MS
+    while since < now:
+        rows += _fetch(ex, sym, tf, since, limit)
+        since += limit * ms
+    df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "volume"]).drop_duplicates("ts").sort_values("ts").iloc[:-1]
     df = df.reset_index(drop=True)
+    if fill:
+        df = regularize(df, ms)
+    path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(path, index=False)
     return df
+
+
+def load_klines(sym: str, tf: str, years: int = 2, ex=None) -> pd.DataFrame:
+    """Binance 캔들 + 체결 방향 정보(taker_buy_base = 공격적 매수 거래량, n_trades = 체결 건수). ccxt 표준 OHLCV 에는 없는 열이라 원시 klines API 를 쓴다."""
+    path = DATA / "candles" / f"{sym.replace('/', '_')}_{tf}_kl.csv"
+    if path.exists() and time.time() - path.stat().st_mtime < 12 * 3600:
+        return pd.read_csv(path)
+    ex = ex or make_exchange()
+    ex.load_markets()
+    mid, ms, now = ex.market(sym)["id"], ex.parse_timeframe(tf) * 1000, int(time.time() * 1000)
+    since, rows = now - years * 365 * DAY_MS, []
+    while since < now:
+        for k in range(6):
+            try:
+                rows += ex.publicGetKlines({"symbol": mid, "interval": tf, "startTime": since, "limit": 1000})
+                break
+            except Exception:  # 네트워크·레이트리밋 → 백오프 재시도 (ccxt 예외 종류가 많아 일괄 처리, 6회 실패 시 아래에서 중단)
+                time.sleep(0.5 * 2 ** k)
+        else:
+            raise RuntimeError(f"klines 반복 실패: {sym} {tf}")
+        since += 1000 * ms
+    df = pd.DataFrame(rows).iloc[:, [0, 1, 2, 3, 4, 5, 8, 9]].astype(float)
+    df.columns = ["ts", "open", "high", "low", "close", "volume", "n_trades", "taker_buy_base"]
+    df = df.drop_duplicates("ts").sort_values("ts").iloc[:-1].reset_index(drop=True)
+    df["ts"] = df["ts"].astype("int64")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path, index=False)
+    return df
+
+
+def universe(ex, years: int, min_value: float = 1e9, log=print) -> list[str]:
+    """KRW 유니버스 — 성과와 무관한 기계적 규칙 (STRATEGY_RESEARCH.md §10):
+    (i) 창 시작 7일 이내에 첫 일봉(5년 이상 상장) (ii) 스테이블코인 제외 (iii) 창 첫 365일 일 거래대금(volume×close) 중앙값 ≥ min_value.
+    상장폐지 코인은 API 로 가져올 수 없어 생존 편향은 남는다."""
+    ex.load_markets()
+    cands = sorted(s for s, m in ex.markets.items() if m.get("quote") == "KRW" and m.get("spot") and m.get("active") and m["base"] not in STABLES)
+    start, keep, why = int(time.time() * 1000) - years * 365 * DAY_MS, [], {"신규상장(5년 미만)": 0, "유동성 미달": 0}
+    for sym in cands:
+        first = _fetch(ex, sym, "1d", start, 8)  # 창 시작 ~ +8일 사이의 일봉
+        if not first or first[0][0] > start + 7 * DAY_MS:
+            why["신규상장(5년 미만)"] += 1
+            continue
+        df = load(sym, "1d", years, ex, limit=200, fill=True)
+        value = float((df["volume"] * df["close"]).iloc[:365].median())
+        if value < min_value:
+            why["유동성 미달"] += 1
+            continue
+        keep.append((value, sym))
+    log(f"    유니버스: 후보 {len(cands)} → 선정 {len(keep)} (제외: {why})")
+    return [sym for _, sym in sorted(keep, reverse=True)]
 
 
 # ───────────── 시뮬레이션 ─────────────
@@ -106,11 +180,11 @@ def apply_filter(pos, allow: dict) -> np.ndarray:
 
 
 # ───────────── 통계 ─────────────
-def reality_check(D: np.ndarray, B: int | None = None, seed: int = 0) -> float:
-    """White(2000) Reality Check: H0 = 어떤 전략도 평균 초과수익이 없다. D[n,K] = 초과수익. 정상 부트스트랩(평균 블록 n^(1/3)), 반환 p 값."""
+def reality_check(D: np.ndarray, B: int | None = None, seed: int = 0, block: int | None = None) -> float:
+    """White(2000) Reality Check: H0 = 어떤 전략도 평균 초과수익이 없다. D[n,K] = 초과수익. 정상 부트스트랩(평균 블록 기본 n^(1/3), block 으로 지정 가능), 반환 p 값."""
     n, K = D.shape
     B = B or (1000 if n < 20_000 else 400)
-    L, rng, mean = max(2, round(n ** (1 / 3))), np.random.default_rng(seed), D.mean(0)
+    L, rng, mean = block or max(2, round(n ** (1 / 3))), np.random.default_rng(seed), D.mean(0)
     v_obs, v = np.sqrt(n) * mean.max(), np.empty(B)
     for b in range(B):
         restart = rng.random(n) < 1 / L
@@ -208,10 +282,15 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tfs", nargs="+", default=["1h", "4h", "1d"])
     ap.add_argument("--jev-tfs", nargs="*", default=["4h", "1d"], help="Jev 필터를 평가할 주기 (빈 값이면 생략)")
-    ap.add_argument("--coins", nargs="+", default=COINS)
+    ap.add_argument("--coins", nargs="+", default=None, help="기본: binance 는 5코인, upbit 은 KRW 유니버스 자동 선정")
     ap.add_argument("--years", type=int, default=5)
+    ap.add_argument("--exchange", default="binance", choices=["binance", "upbit"])
+    ap.add_argument("--cost", type=float, default=COST_PER_SIDE, help="편도 비용(비율). 기본 0.0007 = 수수료 0.05%% + 슬리피지 0.02%%")
+    ap.add_argument("--min-value", type=float, default=1e9, help="upbit 유니버스: 창 첫 365일 일 거래대금 중앙값 하한(KRW)")
     a = ap.parse_args(argv)
-    ex, out = make_exchange(), {}
+    ex, out = make_exchange(a.exchange), {}
+    limit, fill = (200, True) if a.exchange == "upbit" else (1000, False)  # 업비트: 요청당 200봉, 무거래 봉 생략
+    coins = a.coins or (universe(ex, a.years, a.min_value) if a.exchange == "upbit" else COINS)
     client = None
     if set(a.tfs) & set(a.jev_tfs):
         from typesafe_sdk import TypeSafeClient
@@ -222,14 +301,14 @@ def main(argv=None):
 
     for tf in a.tfs:
         bpy = BPY[tf]
-        data = {s: load(s, tf, a.years, ex) for s in a.coins}
+        data = {s: load(s, tf, a.years, ex, limit, fill) for s in coins}
         sims = {}  # (coin, rule) -> DataFrame
         for s, df in data.items():
-            sims[(s, "B&H")] = simulate(df, np.ones(len(df)))
+            sims[(s, "B&H")] = simulate(df, np.ones(len(df)), a.cost)
             for name, fn in RULES.items():
-                sims[(s, name)] = simulate(df, fn(df).to_numpy())
+                sims[(s, name)] = simulate(df, fn(df).to_numpy(), a.cost)
         span = {s: (pd.to_datetime(df.ts.iloc[0], unit="ms").date(), pd.to_datetime(df.ts.iloc[-1], unit="ms").date(), len(df)) for s, df in data.items()}
-        print(f"\n{'=' * 78}\n[{tf}] {a.years}년, 코인 {len(data)}개, 비용 편도 {COST_PER_SIDE * 100:.2f}%   기간 예: {list(span.values())[0]}\n{'=' * 78}")
+        print(f"\n{'=' * 78}\n[{a.exchange} {tf}] {a.years}년, 코인 {len(data)}개, 비용 편도 {a.cost * 100:.2f}%   기간 예: {list(span.values())[0]}\n{'=' * 78}")
 
         # (1) 규칙별 성과: 5코인 동일가중
         names = ["B&H"] + list(RULES)
@@ -242,9 +321,21 @@ def main(argv=None):
         for n_ in names:
             st = [stats(sims[(s, n_)], bpy) for s in data]
             rows[n_]["연진입"], rows[n_]["노출%"] = np.mean([x["연진입"] for x in st]), np.mean([x["노출%"] for x in st])
-        print(f"\n[규칙별 성과 — 5코인 동일가중, 비용 반영]\n{fmt(pd.DataFrame(rows).T)}")
+        print(f"\n[규칙별 성과 — {len(data)}코인 동일가중, 비용 반영]\n{fmt(pd.DataFrame(rows).T)}")
         sharpe = pd.DataFrame({n_: {s: stats(sims[(s, n_)], bpy)["샤프"] for s in data} for n_ in names})
-        print(f"\n[코인별 샤프]\n{fmt(sharpe)}")
+        if len(data) <= 10:
+            print(f"\n[코인별 샤프]\n{fmt(sharpe)}")
+        else:
+            print(f"\n[코인별 샤프 요약 — {len(data)}코인] 규칙별 '단순 보유보다 샤프가 높은 코인 비율%':  "
+                  + "  ".join(f"{n_} {(sharpe[n_] > sharpe['B&H']).mean() * 100:.0f}" for n_ in RULES))
+
+        # (1a) ★1차 지표(사전 지정): 규칙 포트폴리오의 노출 보정 초과수익 — Reality Check(family = 규칙 5개)
+        bh_gross = ew({s: sims[(s, "B&H")]["oo"] for s in data})
+        ports = {n_: ew({s: sims[(s, n_)]["ret"] for s in data}) - np.mean([sims[(s, n_)]["pos"].mean() for s in data]) * bh_gross for n_ in RULES}
+        Dp = pd.DataFrame(ports).dropna()
+        p_port = reality_check(Dp.to_numpy())
+        print(f"\n[★1차 지표] 규칙 포트폴리오 노출 보정 초과수익(연%): " + "  ".join(f"{n_} {Dp[n_].mean() * bpy * 100:+.2f}" for n_ in RULES))
+        print(f"           Reality Check(family=규칙 {len(RULES)}개) p = {p_port:.3f}  ({'유의(2주기 → 0.025)' if p_port < 0.025 else '유의하지 않음'})")
 
         # (1') Reality Check: 규칙 25개의 노출 보정 초과수익
         cols, D = [], {}
@@ -255,10 +346,10 @@ def main(argv=None):
         Dm = pd.DataFrame(D).dropna()
         best = Dm.mean().idxmax()
         p_rc = reality_check(Dm.to_numpy())
-        print(f"\n[Reality Check] 규칙 {Dm.shape[1]}개 중 최고 = {best}, 연 타이밍 초과수익 {Dm.mean()[best] * bpy * 100:+.2f}%  → 다중검정 p = {p_rc:.3f}"
+        print(f"\n[2차 Reality Check] 규칙×코인 {Dm.shape[1]}개 중 최고 = {best}, 연 타이밍 초과수익 {Dm.mean()[best] * bpy * 100:+.2f}%  → 다중검정 p = {p_rc:.3f}"
               f"  ({'유의(5%)' if p_rc < 0.05 else '유의하지 않음'})")
         pos_share = (Dm.mean() > 0).mean() * 100
-        print(f"                (25개 중 타이밍 초과수익이 양수인 비율 {pos_share:.0f}%)")
+        print(f"                ({Dm.shape[1]}개 중 타이밍 초과수익이 양수인 비율 {pos_share:.0f}%)")
 
         # (2) 표본 내 최적 → 표본 외
         oos_rows = []
@@ -271,7 +362,11 @@ def main(argv=None):
             oos_rows.append({"코인": s, "표본내 최적": b_, "IS샤프": is_sh[b_], "OOS샤프": o_["샤프"], "OOS연수익%": o_["연수익%"], "OOS MDD%": o_["MDD%"],
                              "B&H OOS샤프": bh["샤프"], "B&H OOS연수익%": bh["연수익%"], "B&H OOS MDD%": bh["MDD%"]})
         oos = pd.DataFrame(oos_rows).set_index("코인")
-        print(f"\n[표본 내 최적 규칙 → 표본 외(후반부)]\n{fmt(oos)}")
+        if len(data) <= 10:
+            print(f"\n[표본 내 최적 규칙 → 표본 외(후반부)]\n{fmt(oos)}")
+        else:
+            print(f"\n[표본 내 최적 규칙 → 표본 외(후반부)] {len(data)}코인 — OOS 샤프가 단순 보유보다 높은 코인 {(oos['OOS샤프'] > oos['B&H OOS샤프']).mean() * 100:.0f}%,"
+                  f" OOS MDD 가 더 얕은 코인 {(oos['OOS MDD%'] > oos['B&H OOS MDD%']).mean() * 100:.0f}%")
         print(f"   평균: OOS샤프 {oos['OOS샤프'].mean():.2f} vs B&H {oos['B&H OOS샤프'].mean():.2f} | OOS MDD {oos['OOS MDD%'].mean():.1f}% vs B&H {oos['B&H OOS MDD%'].mean():.1f}%")
 
         # (3) 연도별 (동일가중)
@@ -279,8 +374,9 @@ def main(argv=None):
         for n_ in names:
             port = ew({s: sims[(s, n_)]["ret"] for s in data})
             yr[n_] = ((1 + port).groupby(pd.to_datetime(port.index, unit="ms").year).prod() - 1) * 100
-        print(f"\n[연도별 수익률% — 5코인 동일가중]\n{fmt(pd.DataFrame(yr).T)}")
-        out[tf] = {"rules": pd.DataFrame(rows).T.to_dict(), "reality_check_p": p_rc, "oos": oos.to_dict()}
+        print(f"\n[연도별 수익률% — {len(data)}코인 동일가중]\n{fmt(pd.DataFrame(yr).T)}")
+        out[tf] = {"rules": pd.DataFrame(rows).T.to_dict(), "portfolio_rc_p": p_port, "portfolio_timing_excess_pct_yr": {n_: Dp[n_].mean() * bpy * 100 for n_ in RULES},
+                   "reality_check_p": p_rc, "oos": oos.to_dict(), "n_coins": len(data)}
 
         # (4) Jev 진입 필터
         if tf in a.jev_tfs:
@@ -289,7 +385,7 @@ def main(argv=None):
                 sf = state_frame(df)
                 for n_, fn in RULES.items():
                     pos = fn(df).to_numpy()
-                    for t, tr in trades(df, pos):
+                    for t, tr in trades(df, pos, a.cost):
                         key = f"{s}|{tf}|{n_}|{int(df.ts.iloc[t])}"
                         st = label(sf.iloc[t], n_, tf)
                         meta[key] = (s, n_, t, tr, st is not None)
@@ -319,20 +415,20 @@ def main(argv=None):
                 for s, df in data.items():
                     pos = RULES[n_](df).to_numpy()
                     ret_r[s] = sims[(s, n_)]["ret"]
-                    ret_j[s] = simulate(df, apply_filter(pos, allow_map(df, pos, s, tf, n_, cache)))["ret"]
+                    ret_j[s] = simulate(df, apply_filter(pos, allow_map(df, pos, s, tf, n_, cache)), a.cost)["ret"]
                 pr, pj = ew(ret_r), ew(ret_j)
                 sr, sj = (stats(pd.DataFrame({"ret": x, "pos": 1.0}), bpy) for x in (pr, pj))  # pos 는 성과 통계에 쓰이지 않음
                 jr[n_] = {"규칙만 연수익%": sr["연수익%"], "규칙+Jev 연수익%": sj["연수익%"], "규칙만 샤프": sr["샤프"], "규칙+Jev 샤프": sj["샤프"],
                           "규칙만 MDD%": sr["MDD%"], "규칙+Jev MDD%": sj["MDD%"]}
                 jd[n_] = (pj - pr).to_numpy()
-            print(f"\n[포트폴리오: 규칙만 vs 규칙 + Jev 필터 — 5코인 동일가중]\n{fmt(pd.DataFrame(jr).T)}")
+            print(f"\n[포트폴리오: 규칙만 vs 규칙 + Jev 필터 — {len(data)}코인 동일가중]\n{fmt(pd.DataFrame(jr).T)}")
             m = min(len(v) for v in jd.values())
             p_j = reality_check(np.column_stack([v[-m:] for v in jd.values()]))
             print(f"    Reality Check(규칙 5개 중 Jev 필터가 규칙만보다 나은 것이 하나라도 있는가): p = {p_j:.3f}")
             out[tf]["jev_portfolio"] = jr
             out[tf]["jev_rc_p"] = p_j
 
-    res = DATA / "backtest" / f"results_{time.strftime('%Y%m%d_%H%M%S')}.json"
+    res = DATA / "backtest" / f"results_{a.exchange}_c{a.cost * 1e4:.0f}bp_{time.strftime('%Y%m%d_%H%M%S')}.json"
     res.write_text(json.dumps(out, indent=1, default=float, ensure_ascii=False))
     print(f"\n저장: {res}")
 

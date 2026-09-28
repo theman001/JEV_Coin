@@ -106,3 +106,82 @@ def test_jev_state_is_masked_and_causal():
     blob = " ".join(f"{k} {v}" for k, v in st.items())
     assert not any(w in blob for w in ("USDT", "BTC", "ETH", "SOL", "2021", "2022", "2023", "2024", "2025"))  # 코인명·날짜 없음
     assert st == label(state_frame(df.iloc[:301].reset_index(drop=True)).iloc[300], "채널돌파 20/10", "4h")  # 미래를 잘라도 같은 상태
+
+
+# ── 로더·유니버스 (Upbit 확장) ──
+import time as _time
+from pathlib import Path
+
+import src.backtest as bt
+
+H, D = 3_600_000, 86_400_000
+
+
+class StubEx:
+    """업비트 흉내: since 부터 limit 개 창 안의 (존재하는) 캔들만 반환. listed = 상장 시각, gaps = 무거래 봉 open ts 집합."""
+    def __init__(self, listed=0, gaps=(), value=1e10, markets=None):
+        self.listed, self.gaps, self.value, self.markets = listed, set(gaps), value, markets or {}
+
+    def parse_timeframe(self, tf):
+        return {"1h": 3600, "1d": 86400}[tf]
+
+    def load_markets(self):
+        return self.markets
+
+    def fetch_ohlcv(self, sym, tf, since=None, limit=200):
+        step = self.parse_timeframe(tf) * 1000
+        v = self.value[sym] if isinstance(self.value, dict) else self.value
+        lst = self.listed[sym] if isinstance(self.listed, dict) else self.listed
+        now, out = int(_time.time() * 1000), []
+        t = (max(since, lst) // step) * step
+        while t < since + limit * step and t <= now:
+            if t >= since and t >= lst and t not in self.gaps:
+                out.append([t, 100.0, 101.0, 99.0, 100.0, v / 100.0])
+            t += step
+        return out
+
+
+def test_load_paginates_dedupes_and_survives_gaps(tmp_path, monkeypatch):
+    monkeypatch.setattr(bt, "DATA", tmp_path)
+    now_h = (int(_time.time() * 1000) // H) * H
+    gaps = {now_h - k * H for k in (3000, 3001, 5000)}  # 무거래 봉
+    ex = StubEx(gaps=gaps)
+    df = bt.load("AAA/KRW", "1h", years=1, ex=ex, limit=200)
+    assert df["ts"].is_unique and df["ts"].is_monotonic_increasing
+    assert not set(df["ts"]) & gaps  # fill=False: 누락은 그대로
+    assert df["ts"].iloc[-1] == now_h - H  # 진행 중인 마지막 캔들은 제외
+    assert len(df) > 8000
+    (tmp_path / "candles" / "AAA_KRW_1h.csv").unlink()
+    filled = bt.load("AAA/KRW", "1h", years=1, ex=ex, limit=200, fill=True)
+    assert (np.diff(filled["ts"]) == H).all() and len(filled) == len(df) + len(gaps)
+    assert (filled[filled["ts"].isin(gaps)]["volume"] == 0).all()
+
+
+def test_regularize_fills_with_previous_close():
+    df = pd.DataFrame({"ts": [0, H, 3 * H], "open": [1.0, 2, 4], "high": [1.0, 2, 4], "low": [1.0, 2, 4], "close": [1.0, 2, 4], "volume": [5.0, 5, 5]})
+    r = bt.regularize(df, H)
+    assert r["ts"].tolist() == [0, H, 2 * H, 3 * H]
+    assert r.loc[2, ["open", "high", "low", "close"]].tolist() == [2, 2, 2, 2] and r.loc[2, "volume"] == 0
+
+
+def test_universe_rules(tmp_path, monkeypatch):
+    monkeypatch.setattr(bt, "DATA", tmp_path)
+    now = int(_time.time() * 1000)
+    mk = lambda b: {"quote": "KRW", "spot": True, "active": True, "base": b}
+    markets = {f"{b}/KRW": mk(b) for b in ("GOOD", "NEW", "THIN", "USDT", "SEMI")}
+    markets["BTC/USDT"] = {"quote": "USDT", "spot": True, "active": True, "base": "BTC"}  # KRW 가 아님
+    start = now - 5 * 365 * D
+    ex = StubEx(markets=markets,
+                listed={"GOOD/KRW": 0, "NEW/KRW": now - 100 * D, "THIN/KRW": 0, "USDT/KRW": 0, "SEMI/KRW": start + 5 * D},
+                value={"GOOD/KRW": 5e9, "NEW/KRW": 5e9, "THIN/KRW": 1e7, "USDT/KRW": 9e9, "SEMI/KRW": 2e9})
+    logs = []
+    got = bt.universe(ex, years=5, min_value=1e9, log=logs.append)
+    assert got == ["GOOD/KRW", "SEMI/KRW"]  # 거래대금 내림차순. 신규상장·유동성 미달·스테이블코인·비KRW 제외, 창 시작 5일 뒤 상장은 포함(7일 이내)
+    assert "신규상장(5년 미만)': 1" in logs[0] and "유동성 미달': 1" in logs[0]
+
+
+def test_cli_parser_builds():
+    """argparse 도움말 문자열의 % 같은 실수는 실행해야만 드러난다 — --help 로 파서 생성을 검사."""
+    with pytest.raises(SystemExit) as e:
+        bt.main(["--help"])
+    assert e.value.code == 0
