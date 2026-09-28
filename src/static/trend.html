@@ -106,7 +106,7 @@ function drawCurve(pts, base) {
   const svg = $("curve");
   if (pts.length < 2) { svg.innerHTML = ""; $("curved").textContent = "4h 캔들이 마감될 때마다 점이 쌓입니다 (하루 6점)"; return; }
   const a = pts.map(p => (p[1] / base - 1) * 100), b = pts.map(p => (p[2] - 1) * 100);
-  const all = a.concat(b, 0), lo = Math.min(...all), hi = Math.max(...all), span = (hi - lo) || 1;
+  const all = a.concat(b, 0), lo = Math.min(...all), hi = Math.max(...all), span = Math.max(hi - lo, 0.5);  // 최소 표시 폭 0.5%p
   const X = i => i / (pts.length - 1) * 600, Y = v => 112 - (v - lo) / span * 104;
   const line = (ys, color) => `<polyline fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke" points="${ys.map((v,i)=>X(i).toFixed(1)+","+Y(v).toFixed(1)).join(" ")}"/>`;
   svg.innerHTML = `<line x1="0" x2="600" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--line)" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>` + line(b, "var(--dim)") + line(a, "var(--up)");

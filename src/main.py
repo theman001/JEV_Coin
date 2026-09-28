@@ -23,7 +23,7 @@ DEFAULTS = {
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--once", action="store_true", help="웹 없이 폴링 1회 실행 후 스냅샷 출력 (동작 확인용)")
-    ap.add_argument("--symbol", help="시작 코인 (기본: SYMBOLS의 첫 번째)")
+    ap.add_argument("--symbol", help="이 코인만 실행 (기본: SYMBOLS 전체 동시 실행)")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -34,7 +34,7 @@ def main(argv=None) -> int:
     if mode not in DEFAULTS:
         sys.exit(f"MODE must be one of {sorted(DEFAULTS)}, got {mode!r}")
     d = DEFAULTS[mode]
-    symbols = [s.strip() for s in os.getenv("SYMBOLS", d["symbols"]).split(",") if s.strip()]
+    symbols = [args.symbol] if args.symbol else [s.strip() for s in os.getenv("SYMBOLS", d["symbols"]).split(",") if s.strip()]
     common = dict(timeframe=os.getenv("TIMEFRAME", d["timeframe"]), interval=float(os.getenv("POLL_SECONDS", d["poll"])),
                   equity=float(os.getenv("PAPER_EQUITY", d["equity"])), data_dir=None if args.once else os.getenv("DATA_DIR", "data"))
     ex = make_exchange(os.getenv("EXCHANGE", d["exchange"]))
@@ -49,8 +49,6 @@ def main(argv=None) -> int:
             judge = FakeJudge()
         engine = Engine(ex, judge, symbols, **common)
         label = f"judge={judge.name}"
-    if args.symbol:
-        engine.set_symbol(args.symbol)  # trend 모드는 ValueError (고정 포트폴리오)
 
     if args.once:
         engine.start()

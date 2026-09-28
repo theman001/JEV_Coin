@@ -6,7 +6,7 @@
 #       코드를 업데이트한 뒤에는 Up 만으로는 재빌드되지 않습니다 → OMV 의 "Build"(또는 "Pull and build") 후 Up.
 #
 # 서비스 3개 (같은 이미지, 같은 볼륨 jev-data — 파일 이름이 겹치지 않는다):
-#   jev-coin  Jev 판단 단타 봇 (모의, Binance)                       → :8787   state.json, judgments.jsonl
+#   jev-coin  Jev 판단 단타 봇, 5코인 동시 (모의, Binance)            → :8787   jev_state.json, judgments.jsonl
 #   jev-trend 4h SMA 20/50 추세추종 5코인 포트폴리오 (모의, Upbit KRW) → :8788   trend_state.json, trend.jsonl  (STRATEGY_RESEARCH.md §14)
 #   jev-liq   Binance 강제청산 수집기 (전 심볼, 앞으로 쌓는 데이터)     → 포트 없음 liq/YYYY-MM-DD.jsonl
 # 필요 없는 서비스는 통째로 지우면 됩니다.

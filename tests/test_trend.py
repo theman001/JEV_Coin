@@ -247,7 +247,7 @@ def test_web_serves_trend_page_and_controls(web):
     assert json.loads(call(base, "/api/start", {})[1])["running"] is True
 
 
-@pytest.mark.parametrize("mode,expect", [("trend", "trend"), ("jev", None)])
+@pytest.mark.parametrize("mode,expect", [("trend", "trend"), ("jev", "jev")])
 def test_main_once_selects_engine_by_mode(monkeypatch, mode, expect):
     """MODE 분기(엔트리 리팩터링): 두 모드 모두 --once 가 끝까지 돌고, 모드별 기본값이 적용된다."""
     syms = ["A/KRW"] if mode == "trend" else ["A/USDT", "B/USDT"]

@@ -15,7 +15,7 @@ from typesafe_sdk import RetryPolicy, SystemOneResponse, TypeSafeClient
 from src.broker import PaperBroker
 from src.data import StaleData, fetch_closed
 from src.judge import QUESTIONS, SAFE, FakeJudge, JevJudge, Judgment, parse
-from src.engine import Engine
+from src.engine import MAX_CONSECUTIVE_ERRORS, Engine
 from src.policy import COST_PER_SIDE, MAX_POS_FRAC, STOP_LOSS_PCT, Signal, decide
 from src.state import build_state
 from src.web import make_server
@@ -35,16 +35,19 @@ class StubExchange:
     def __init__(self, df, price=None, fail=False):
         self.rows = df.values.tolist()
         self.price, self.fail = price or float(df.close.iloc[-1]), fail
+        self.prices, self.down = {}, set()  # 코인별 가격 override / 조회 실패 코인
 
     def fetch_ticker(self, symbol):
-        if self.fail:
+        if self.fail or symbol in self.down:
             raise ConnectionError("exchange down")
-        return {"last": self.price}
+        return {"last": self.prices.get(symbol, self.price)}
 
     def parse_timeframe(self, tf):
         return 3600
 
     def fetch_ohlcv(self, symbol, tf, limit):
+        if self.fail or symbol in self.down:
+            raise ConnectionError("exchange down")
         return self.rows + [self.rows[-1]]  # 마지막은 '진행 중' 캔들 (버려져야 함)
 
 
@@ -192,25 +195,35 @@ class Scripted:
         return Judgment(self.side, 0.9, 0.1, "test")
 
 
-def engine(tmp_path, judge=None, ex=None, symbols=("X/USDT", "Y/USDT")):
-    return Engine(ex or StubExchange(candles()), judge or Scripted(), list(symbols), timeframe="1h", interval=0.01, data_dir=tmp_path)
+SYMS = ("X/USDT", "Y/USDT")
+STOP_PX = 1 - (STOP_LOSS_PCT + 0.1) / 100  # 손절선을 넘는 하락 배율
 
 
-def test_engine_one_judgment_per_candle_then_code_stop_loss(tmp_path):
+def engine(tmp_path, judge=None, ex=None, symbols=SYMS):
+    return Engine(ex or StubExchange(candles()), judge or Scripted(), list(symbols), timeframe="1h", interval=0.01, data_dir=tmp_path, equity=1000.0)
+
+
+def sides(e):
+    return [e.slots[s].side for s in SYMS]
+
+
+def test_engine_one_judgment_per_candle_per_coin_then_code_stop_loss_only_that_coin(tmp_path):
     ex, j = StubExchange(candles()), Scripted()
     e = engine(tmp_path, j, ex)
     e.start()
     e.step()
-    assert e.broker.side == "long" and j.calls == 1 and len(e.curve) == 1
+    assert sides(e) == ["long", "long"] and j.calls == 2 and len(e.curve) == 1
+    assert all(b.start_equity == 500.0 for b in e.slots.values())  # 자본 ÷ 코인 수
     e.step()
-    assert j.calls == 1  # 같은 캔들 → Jev 재호출 없음
-    ex.price *= 1 - (STOP_LOSS_PCT + 0.1) / 100
+    assert j.calls == 2  # 같은 캔들 → Jev 재호출 없음
+    ex.prices["X/USDT"] = ex.price * STOP_PX
     e.step()
-    assert e.broker.side == "flat" and e.judgments[-1]["kind"] == "stop_loss"
+    assert sides(e) == ["flat", "long"]  # 손절은 그 코인만
+    assert e.judgments[-1]["kind"] == "stop_loss" and e.judgments[-1]["symbol"] == "X/USDT"
     e.step()
-    assert j.calls == 1 and e.broker.side == "flat"  # 손절 직후 같은 캔들에서 재진입 안 함
+    assert j.calls == 2 and sides(e) == ["flat", "long"]  # 손절 직후 같은 캔들에서 재진입 안 함
     json.dumps(e.snapshot(), allow_nan=False)  # 웹 응답은 엄격한 JSON (NaN 금지)
-    assert abs(e.snapshot()["candle_ts"] - time.time()) < 2 * 3600  # 초 단위 (거래소 ms 아님)
+    assert abs(e.snapshot()["coins"][0]["candle_ts"] - time.time()) < 2 * 3600  # 초 단위 (거래소 ms 아님)
 
 
 def test_engine_no_reentry_when_stop_and_new_candle_coincide(tmp_path):
@@ -218,41 +231,49 @@ def test_engine_no_reentry_when_stop_and_new_candle_coincide(tmp_path):
     e = engine(tmp_path, j, ex)
     e.start()
     e.step()
-    assert j.calls == 1 and e.broker.side == "long"
+    assert j.calls == 2 and sides(e) == ["long", "long"]
     ex.rows = candles(end_ms=(int(time.time() * 1000) // HOUR_MS) * HOUR_MS).values.tolist()  # 다음 캔들 마감
-    ex.price *= 1 - (STOP_LOSS_PCT + 0.1) / 100  # 같은 폴링에서 손절선도 이탈
+    ex.prices["X/USDT"] = ex.price * STOP_PX  # 같은 폴링에서 X 만 손절선도 이탈
     e.step()
-    assert e.broker.side == "flat" and j.calls == 1  # 손절한 폴링의 새 캔들에선 Jev를 부르지도, 재진입하지도 않는다
+    assert sides(e) == ["flat", "long"] and j.calls == 3  # X: Jev 를 부르지도 재진입하지도 않음 / Y: 정상 판단
     e.step()
-    assert j.calls == 1  # 그 캔들은 소비된 것으로 처리
+    assert j.calls == 3  # X 의 그 캔들은 소비된 것으로 처리
 
 
-def test_engine_stop_flattens_and_start_rejudges(tmp_path):
+def test_engine_judgments_run_in_parallel(tmp_path):
+    """Jev 가 느려도 다른 코인의 손절 확인이 밀리지 않도록 판단은 동시에 부른다 (순차 호출이면 배리어가 시간초과)."""
+    barrier = threading.Barrier(2, timeout=3)
+    j = Scripted(hook=barrier.wait)
+    e = engine(tmp_path, j)
+    e.start()
+    e.step()
+    assert j.calls == 2 and sides(e) == ["long", "long"] and e.error is None
+
+
+def test_engine_stop_flattens_everything_and_start_rejudges(tmp_path):
     j = Scripted()
     e = engine(tmp_path, j)
     e.start()
     e.step()
     e.stop()
-    assert not e.running and e.broker.side == "flat" and e.judgments[-1]["kind"] == "manual_flat"
+    assert not e.running and sides(e) == ["flat", "flat"] and {r["kind"] for r in list(e.judgments)[-2:]} == {"manual_flat"}
     e.start()
     e.step()
-    assert j.calls == 2 and e.broker.side == "long"  # 재시작 시 마지막 마감 캔들로 바로 판단
+    assert j.calls == 4 and sides(e) == ["long", "long"]  # 재시작 시 코인마다 마지막 마감 캔들로 바로 판단
     e.start()  # 이미 실행 중이면 no-op (재판단 없음)
     e.step()
-    assert j.calls == 2
+    assert j.calls == 4
 
 
-def test_engine_set_symbol_flattens_and_state_survives_restart(tmp_path):
+def test_engine_no_symbol_selection_and_state_survives_restart(tmp_path):
     e = engine(tmp_path)
     e.start()
     e.step()
     with pytest.raises(ValueError):
-        e.set_symbol("NOPE/USDT")
-    e.set_symbol("Y/USDT")
-    assert e.symbol == "Y/USDT" and e.broker.side == "flat" and e.broker.n_trades == 1
-    e2 = engine(tmp_path)  # 재시작 = 같은 data_dir로 새 엔진
-    assert (e2.symbol, e2.running, e2.broker.n_trades) == ("Y/USDT", True, 1)
-    assert e2.broker.cash == pytest.approx(e.broker.cash)
+        e.set_symbol("X/USDT")  # 코인은 항상 전부 동시에 동작
+    e2 = engine(tmp_path, symbols=("OTHER/USDT",))  # 재시작 = 같은 data_dir, 설정이 달라도 저장된 포트폴리오가 우선
+    assert e2.symbols == list(SYMS) and e2.running and e2.start_equity == 1000.0 and sides(e2) == ["long", "long"]
+    assert e2._equity() == pytest.approx(e._equity()) and (tmp_path / "jev_state.json").exists()
     assert len((tmp_path / "judgments.jsonl").read_text().splitlines()) >= 2
 
 
@@ -261,10 +282,70 @@ def test_engine_discards_result_if_stopped_during_judge(tmp_path):
     e.judge = Scripted(hook=lambda: e.stop())  # Jev 응답을 기다리는 동안 사용자가 중지
     e.start()
     e.step()
-    assert e.broker.side == "flat" and not any(r["kind"] == "judgment" for r in e.judgments)
+    assert sides(e) == ["flat", "flat"] and not any(r["kind"] == "judgment" for r in e.judgments)
 
 
-def test_engine_kill_switch_after_repeated_errors(tmp_path):
+def test_engine_isolates_a_failing_coin_flattens_it_when_blind_and_kills_only_when_all_blind(tmp_path):
+    ex = StubExchange(candles())
+    e = engine(tmp_path, ex=ex)
+    e.start()
+    e.step()
+    ex.down.add("X/USDT")
+    for _ in range(MAX_CONSECUTIVE_ERRORS - 1):
+        e.step()
+    assert e.running and sides(e) == ["long", "long"] and "X/USDT" in e.error and "Y/USDT" not in e.error  # 아직 임계 전: 표시만
+    e.step()
+    assert e.running and sides(e) == ["flat", "long"]  # X: 감시 불가라 청산, Y 는 계속
+    assert any(r["kind"] == "blind_flat" and r["symbol"] == "X/USDT" for r in e.judgments)
+    ex.down.add("Y/USDT")
+    for _ in range(MAX_CONSECUTIVE_ERRORS):
+        e.step()
+    assert not e.running and sides(e) == ["flat", "flat"] and "kill switch" in e.error  # 전 코인이 감시 불가 → 킬스위치
+
+
+def test_engine_error_counter_resets_when_a_coin_recovers(tmp_path):
+    ex = StubExchange(candles())
+    e = engine(tmp_path, ex=ex)
+    e.start()
+    e.step()
+    ex.down.add("X/USDT")
+    for _ in range(MAX_CONSECUTIVE_ERRORS - 1):
+        e.step()
+    ex.down.clear()
+    e.step()
+    assert e.errors["X/USDT"] == 0 and e.error is None
+    ex.down.add("X/USDT")
+    for _ in range(MAX_CONSECUTIVE_ERRORS - 1):
+        e.step()
+    assert sides(e) == ["long", "long"]  # 연속 오류가 아니면 청산하지 않는다
+
+
+def test_engine_writes_disk_only_when_state_changes(tmp_path):
+    """폴링마다 저장하지 않는다 (SD/eMMC 마모): 새 캔들 판단·손절·시작/정지에서만."""
+    ex = StubExchange(candles())
+    e = engine(tmp_path, ex=ex)
+    e.start()
+    e.step()
+    saves = []
+    e._save = lambda: saves.append(1)
+    for _ in range(4):
+        e.step()  # 새 캔들도 손절도 없음
+    assert not saves
+    ex.prices["X/USDT"] = ex.price * STOP_PX
+    e.step()
+    assert saves == [1]  # 손절 1회
+
+
+def test_engine_stale_data_is_skipped_not_counted_as_error(tmp_path):
+    old = candles(end_ms=(int(time.time() * 1000) // HOUR_MS - 10) * HOUR_MS)
+    e = engine(tmp_path, ex=StubExchange(old))
+    e.start()
+    for _ in range(MAX_CONSECUTIVE_ERRORS * 2):
+        e.step()
+    assert e.running and "skip" in e.error and sides(e) == ["flat", "flat"] and not e.errors.get("X/USDT")  # 킬스위치로 가지 않고, 주문도 없다
+
+
+def test_engine_kill_switch_after_repeated_errors_via_loop(tmp_path):
     e = engine(tmp_path, ex=StubExchange(candles(), fail=True))
     e.start()
     threading.Thread(target=e.run_forever, daemon=True).start()
@@ -275,10 +356,44 @@ def test_engine_kill_switch_after_repeated_errors(tmp_path):
     assert not e.running and "kill switch" in e.error
 
 
-def test_corrupt_state_file_is_kept_and_reported(tmp_path):
-    (tmp_path / "state.json").write_text("{not json")
+def test_portfolio_loss_limit_flattens_all_coins_immediately_and_blocks_reentry(tmp_path):
+    ex = StubExchange(candles())
+    e = engine(tmp_path, ex=ex)
+    e.start()
+    e.step()
+    assert sides(e) == ["long", "long"]
+    e.slots["X/USDT"].cash *= 0.5  # 손실 시뮬레이션: 포트폴리오 자산 -25%
+    e.step()  # 새 캔들 없이도 폴링 즉시 (리스크 거부권은 Jev 판단을 기다리지 않는다)
+    assert sides(e) == ["flat", "flat"] and {r["kind"] for r in list(e.judgments)[-2:]} == {"risk_flat"}
+    ex.rows = candles(end_ms=(int(time.time() * 1000) // HOUR_MS) * HOUR_MS).values.tolist()  # 다음 캔들: Jev 는 롱을 원하지만
+    e.step()
+    assert sides(e) == ["flat", "flat"] and "risk veto" in e.judgments[-1]["reason"]  # 한도 초과 상태에서는 신규 진입 차단
+
+
+def test_snapshot_math_and_strict_json(tmp_path):
     e = engine(tmp_path)
-    assert "unreadable" in e.error and (tmp_path / "state.json").read_text() == "{not json"
+    e.start()
+    e.step()
+    s = e.snapshot()
+    json.dumps(s, allow_nan=False)
+    assert s["mode"] == "jev" and s["symbols"] == list(SYMS) and s["exposure_pct"] == 100
+    assert s["equity"] == pytest.approx(sum(c["equity"] for c in s["coins"])) and s["return_pct"] == pytest.approx((s["equity"] / 1000 - 1) * 100)
+    assert s["realized_pnl"] + s["unrealized_pnl"] == pytest.approx(s["equity"] - 1000 + sum(b.entry_cost for b in e.slots.values()))
+    assert all(c["judgment"]["signal"] == "long" and c["indicators"]["price"] and c["state"]["trend"] for c in s["coins"])
+    assert s["session_loss_pct"] >= 0 and s["loss_limit_pct"] == 5.0
+
+
+def test_corrupt_state_file_is_kept_and_reported(tmp_path):
+    (tmp_path / "jev_state.json").write_text("{not json")
+    e = engine(tmp_path)
+    assert "unreadable" in e.error and (tmp_path / "jev_state.json").read_text() == "{not json"
+
+
+def test_legacy_single_coin_state_is_ignored_but_kept(tmp_path):
+    (tmp_path / "state.json").write_text('{"symbol": "X/USDT", "running": true, "broker": {}}')
+    e = engine(tmp_path)
+    assert e.error is None and not e.running and e.start_equity == 1000.0  # 새 멀티코인 계좌로 시작
+    assert (tmp_path / "state.json").exists()
 
 
 # --- web ---
@@ -311,10 +426,9 @@ def test_web_auth_and_ui(web):
 
 def test_web_controls(web):
     snap = lambda: json.loads(call(web, "/api/status")[1])
-    assert snap()["running"] is False and snap()["symbols"] == ["X/USDT", "Y/USDT"]
+    assert snap()["running"] is False and snap()["symbols"] == list(SYMS) and [c["symbol"] for c in snap()["coins"]] == list(SYMS)
     assert json.loads(call(web, "/api/start", {})[1])["running"] is True
-    assert json.loads(call(web, "/api/symbol", {"symbol": "Y/USDT"})[1])["symbol"] == "Y/USDT"
-    assert call(web, "/api/symbol", {"symbol": "NOPE"})[0] == 400
+    assert call(web, "/api/symbol", {"symbol": "Y/USDT"})[0] == 400  # 코인 선택 없음: 전부 동시에
     assert call(web, "/api/symbol", {})[0] == 400
     assert call(web, "/api/start", {}, ctype="text/plain")[0] == 415  # CSRF 방어
     assert call(web, "/api/start", {}, auth=None)[0] == 401

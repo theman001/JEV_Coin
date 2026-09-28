@@ -2,7 +2,7 @@
 
 GET  /             UI (src/static/index.html, 추세추종 모드는 trend.html)
 GET  /api/status   Engine.snapshot() JSON
-POST /api/start | /api/stop | /api/symbol {"symbol": "SOL/USDT"}
+POST /api/start | /api/stop   (/api/symbol 은 두 엔진 모두 400: 코인은 항상 전부 동시에 동작)
 GET  /healthz      인증 없음 (Docker healthcheck용)
 """
 import base64

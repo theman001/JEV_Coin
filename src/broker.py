@@ -7,10 +7,10 @@ MAX_TRADES_KEPT = 200
 
 
 class PaperBroker:
-    def __init__(self, equity: float = 10_000.0):
+    def __init__(self, equity: float = 10_000.0, symbol: str = ""):
         self.cash = equity  # 실현 손익 반영된 자본 (진입 비용 차감 후)
         self.start_equity = equity
-        self.symbol = ""  # 엔진이 코인 변경 시(=플랫일 때) 갱신. 체결 기록 라벨용
+        self.symbol = symbol  # 체결 기록 라벨용
         self.side = "flat"
         self.qty = 0.0
         self.entry = 0.0

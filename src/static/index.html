@@ -40,7 +40,6 @@ th{color:var(--dim);font-weight:500;font-size:12px}
 svg{width:100%;height:120px;display:block}
 h2{font-size:13px;margin:0 0 8px;color:var(--dim);font-weight:600}
 </style>
-</head>
 <body>
 <main>
 <header>
@@ -49,33 +48,30 @@ h2{font-size:13px;margin:0 0 8px;color:var(--dim);font-weight:600}
 </header>
 
 <div class="bar">
-  <label>코인 <select id="sym"></select></label>
-  <button id="go" class="go">▶ 매매 실행</button>
-  <button id="halt" class="halt">■ 매매 중지 (포지션 청산)</button>
+  <button id="go" class="go">▶ 매매 실행 (전 코인)</button>
+  <button id="halt" class="halt">■ 매매 중지 (전 포지션 청산)</button>
   <span><span id="dot" class="dot"></span><span id="status">-</span></span>
+  <span class="sub">코인별 독립 슬롯 (자본 ÷ 코인 수) · 손실 한도는 포트폴리오 전체 기준</span>
 </div>
 <div id="err" class="err"></div>
 
 <div class="grid">
-  <div class="card"><h3>현재가</h3><div class="big" id="price">-</div><div class="sub" id="candle">-</div></div>
-  <div class="card"><h3>포지션</h3><div class="big" id="pos">-</div><div class="sub" id="posd">-</div></div>
   <div class="card"><h3>총 수익률</h3><div class="big" id="ret">-</div><div class="sub" id="eq">-</div></div>
   <div class="card"><h3>실현 / 미실현</h3><div class="big" id="real" style="font-size:17px">-</div><div class="sub" id="unreal">-</div></div>
+  <div class="card"><h3>세션 손실 (한도 대비)</h3><div class="big" id="loss">-</div><div class="sub" id="lossd">-</div></div>
+  <div class="card"><h3>노출</h3><div class="big" id="expo">-</div><div class="sub">포지션 보유 코인 / 전체</div></div>
   <div class="card"><h3>청산 거래</h3><div class="big" id="ntr">-</div><div class="sub" id="win">-</div></div>
 </div>
 
-<div class="card" style="margin-bottom:12px"><h2>자산 곡선 (폴링마다 1점)</h2>
+<div class="card" style="margin-bottom:12px"><h2>자산 곡선 (폴링마다 1점, 포트폴리오 전체)</h2>
   <svg id="curve" viewBox="0 0 600 120" preserveAspectRatio="none"></svg>
   <div class="sub" id="curved"></div></div>
 
-<div class="cols">
-  <div class="card"><h2>실시간 지표 (마지막 마감 캔들 기준)</h2>
-    <table><tbody id="ind"></tbody></table><div id="chips" style="margin-top:8px"></div></div>
-  <div class="card"><h2>최신 판단</h2><div id="last">-</div></div>
-</div>
+<div class="card" style="margin-bottom:12px"><h2>코인별 (마지막 마감 캔들 기준 · 최신 Jev 판단)</h2><div class="scroll">
+  <table><thead><tr><th>코인</th><th>현재가</th><th>Jev 판단</th><th>확신도</th><th>반전위험</th><th>실행</th><th>포지션</th><th>미실현</th><th>슬롯 자산</th><th>슬롯 수익</th><th>추세</th><th>RSI</th><th>ATR%</th><th>비용 게이트</th></tr></thead><tbody id="coins"></tbody></table></div></div>
 
-<div class="card" style="margin-bottom:12px"><h2>판단 이력 (최신순)</h2><div class="scroll">
-  <table><thead><tr><th>시각</th><th>코인</th><th>Jev 판단</th><th>확신도</th><th>반전위험</th><th>실행</th><th>사유</th><th>포지션</th><th>자산</th></tr></thead><tbody id="hist"></tbody></table></div></div>
+<div class="card" style="margin-bottom:12px"><h2>판단 이력 (최신순, 전 코인)</h2><div class="scroll">
+  <table><thead><tr><th>시각</th><th>코인</th><th>Jev 판단</th><th>확신도</th><th>반전위험</th><th>실행</th><th>사유</th><th>포지션</th><th>포트폴리오 자산</th></tr></thead><tbody id="hist"></tbody></table></div></div>
 
 <div class="card"><h2>청산 거래</h2><div class="scroll">
   <table><thead><tr><th>시각</th><th>코인</th><th>방향</th><th>진입</th><th>청산</th><th>순손익</th><th>%</th></tr></thead><tbody id="trades"></tbody></table></div></div>
@@ -85,12 +81,14 @@ h2{font-size:13px;margin:0 0 8px;color:var(--dim);font-weight:600}
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const SIDE = {long:"롱", short:"숏", flat:"관망"};
+const KIND = {stop_loss:"손절 (코드)", manual_flat:"수동 청산", risk_flat:"리스크 청산 (손실 한도)", blind_flat:"청산 (시세 조회 불가)"};
 const cls = v => v > 0 ? "up" : v < 0 ? "down" : "dim";
-const sign = (v, d=2) => (v > 0 ? "+" : "") + v.toFixed(d);
+const sign = (v, d=2) => v == null ? "-" : (v > 0 ? "+" : "") + v.toFixed(d);
 const px = v => v == null ? "-" : v.toLocaleString("en-US", {maximumFractionDigits: v < 1 ? 5 : v < 100 ? 3 : 2});
 const time = ts => new Date(ts * 1000).toLocaleTimeString("ko-KR", {hour12:false});
 const stamp = ts => new Date(ts * 1000).toLocaleString("ko-KR", {hour12:false, month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit", second:"2-digit"});
 const sideCls = s => s === "long" ? "up" : s === "short" ? "down" : "dim";
+const f = (v, d=2) => v == null ? "-" : v.toFixed(d);
 let S = null, busy = false;
 
 async function api(path, body) {
@@ -100,25 +98,22 @@ async function api(path, body) {
   if (!r.ok) throw new Error(j.error || r.status);
   return j;
 }
-async function act(path, body) {
+async function act(path) {
   if (busy) return; busy = true; render();
-  try { S = await api(path, body); } catch (e) { alert(e.message); } finally { busy = false; render(); }
+  try { S = await api(path, {}); } catch (e) { alert(e.message); } finally { busy = false; render(); }
 }
 
-$("go").onclick = () => act("/api/start", {});
+$("go").onclick = () => act("/api/start");
 $("halt").onclick = () => {
-  if (S.position.side !== "flat" && !confirm("보유 중인 " + SIDE[S.position.side] + " 포지션을 청산하고 중지합니다.")) return;
-  act("/api/stop", {});
-};
-$("sym").onchange = e => {
-  if (S.position.side !== "flat" && !confirm("코인을 바꾸면 보유 포지션이 청산됩니다.")) { e.target.value = S.symbol; return; }
-  act("/api/symbol", {symbol: e.target.value});
+  const open = S.coins.filter(c => c.position !== "flat").length;
+  if (open && !confirm(`보유 중인 ${open}개 코인 포지션을 모두 청산하고 중지합니다.`)) return;
+  act("/api/stop");
 };
 
 function drawCurve(pts, base) {
   const svg = $("curve");
   if (pts.length < 2) { svg.innerHTML = ""; $("curved").textContent = "실행 후 데이터가 쌓이면 표시됩니다"; return; }
-  const ys = pts.map(p => p[1]).concat(base), lo = Math.min(...ys), hi = Math.max(...ys), span = (hi - lo) || 1;
+  const ys = pts.map(p => p[1]).concat(base), lo = Math.min(...ys), hi = Math.max(...ys), span = Math.max(hi - lo, base * 0.002);  // 최소 표시 폭 0.2%: 미세한 등락이 큰 변동처럼 보이지 않게
   const X = i => i / (pts.length - 1) * 600, Y = v => 112 - (v - lo) / span * 104;
   const color = pts[pts.length-1][1] >= base ? "var(--up)" : "var(--down)";
   svg.innerHTML = `<line x1="0" x2="600" y1="${Y(base)}" y2="${Y(base)}" stroke="var(--line)" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>` +
@@ -132,50 +127,40 @@ function render() {
   const stale = S.running && (age == null || age > S.poll_seconds * 3 + 5);
   $("judge").textContent = S.judge === "jev" ? "판단: Jev" : "판단: FakeJudge (테스트용, Jev 아님)";
   $("judge").className = "badge" + (S.judge === "jev" ? "" : " warn");
-  $("tf").textContent = S.timeframe + " 캔들";
-  if (!$("sym").options.length) $("sym").innerHTML = S.symbols.map(s => `<option>${esc(s)}</option>`).join("");
-  if (document.activeElement !== $("sym")) $("sym").value = S.symbol;
-  $("go").disabled = busy || S.running; $("halt").disabled = busy || !S.running; $("sym").disabled = busy;
+  $("tf").textContent = S.timeframe + " 캔들 · " + S.symbols.length + "코인 동시";
+  $("go").disabled = busy || S.running; $("halt").disabled = busy || !S.running;
   $("dot").className = "dot" + (S.running ? (stale ? " stale" : " on") : "");
   $("status").textContent = S.running ? (stale ? "실행 중 · 데이터 갱신 지연" : "실행 중") + (age != null ? ` · ${age.toFixed(0)}초 전 갱신` : "") : "중지됨";
   $("err").style.display = S.error ? "block" : "none"; $("err").textContent = S.error || "";
 
-  $("price").textContent = S.price == null ? "-" : px(S.price);
-  $("candle").textContent = S.candle_ts ? "판단 캔들 시작 " + time(S.candle_ts) : "판단 대기";
-  const p = S.position;
-  $("pos").innerHTML = `<span class="${sideCls(p.side)}">${SIDE[p.side]}</span>`;
-  $("posd").innerHTML = p.side === "flat" ? "&nbsp;" : `진입 ${px(p.entry)} · <span class="${cls(p.pnl_pct)}">${sign(p.pnl_pct)}%</span>`;
   $("ret").innerHTML = `<span class="${cls(S.return_pct)}">${sign(S.return_pct)}%</span>`;
   $("eq").textContent = `자산 ${S.equity.toFixed(2)} / 시작 ${S.start_equity.toFixed(0)}`;
   $("real").innerHTML = `<span class="${cls(S.realized_pnl)}">${sign(S.realized_pnl)}</span>`;
   $("unreal").innerHTML = `미실현 <span class="${cls(S.unrealized_pnl)}">${sign(S.unrealized_pnl)}</span>`;
+  $("loss").innerHTML = `<span class="${S.session_loss_pct > 0 ? "down" : "dim"}">${S.session_loss_pct.toFixed(2)}%</span>`;
+  $("lossd").textContent = `한도 ${S.loss_limit_pct.toFixed(0)}% 도달 시 전 코인 청산·진입 차단`;
+  $("expo").textContent = S.exposure_pct.toFixed(0) + "%";
   $("ntr").textContent = S.n_trades;
   $("win").textContent = S.n_trades ? `승률 ${(S.n_wins / S.n_trades * 100).toFixed(0)}% (${S.n_wins}승)` : "-";
   drawCurve(S.curve, S.start_equity);
 
-  const I = S.indicators, f = (v, d=2) => v == null ? "-" : v.toFixed(d);
-  $("ind").innerHTML = I.price == null ? '<tr><td class="dim">실행 후 표시됩니다</td></tr>' : [
-    ["종가", px(I.price)], ["EMA20 / EMA50", `${px(I.ema20)} / ${px(I.ema50)}`], ["RSI(14)", f(I.rsi, 1)],
-    ["ATR%", f(I.atr_pct, 3) + "%"], ["변동성 (평소 대비)", f(I.volatility_ratio) + "x"], ["거래량 (20봉 대비)", f(I.volume_ratio) + "x"],
-    ["최근 3봉", sign(I.return_3_bars_pct) + "%"], ["최근 24봉", sign(I.return_24_bars_pct) + "%"]]
-    .map(r => `<tr><td class="dim">${r[0]}</td><td>${esc(r[1])}</td></tr>`).join("");
-  const st = S.state || {};
-  $("chips").innerHTML = ["trend","rsi_zone","return_3_bars","volatility","volume","volatility_covers_costs","current_position","position_pnl"]
-    .filter(k => k in st).map(k => `<span class="chip">${k}: ${esc(st[k])}</span>`).join("")
-    + (S.running || !Object.keys(st).length ? "" : ' <span class="sub">(중지 전 Jev에 전달된 마지막 값)</span>');
-
-  const J = S.judgments.find(j => j.kind === "judgment");
-  $("last").innerHTML = !J ? '<span class="dim">아직 판단이 없습니다 (새 캔들이 마감되면 1회 판단)</span>' : `
-    <div class="big ${sideCls(J.side)}">${SIDE[J.side]} <span class="sub">(${esc(J.source)})</span></div>
-    <div class="sub">확신도 ${J.confidence.toFixed(2)}</div><div class="meter"><i style="width:${J.confidence*100}%"></i></div>
-    <div class="sub">반전위험 ${J.reversal_risk.toFixed(2)}</div><div class="meter"><i style="width:${J.reversal_risk*100}%;background:var(--warn)"></i></div>
-    <div>→ 실행 <b class="${sideCls(J.signal)}">${SIDE[J.signal]}</b>${J.size ? ` (자본의 ${(J.size*100).toFixed(1)}%)` : ""}</div>
-    <div class="sub">${esc(J.reason)} · ${stamp(J.ts)}</div>`;
+  $("coins").innerHTML = S.coins.map(c => {
+    const J = c.judgment, I = c.indicators, st = c.state, open = c.position !== "flat";
+    return `<tr><td>${esc(c.symbol)}${c.errors ? ` <span class="down" title="연속 오류 ${c.errors}회">⚠</span>` : ""}</td><td>${px(c.price)}</td>
+    <td class="${J ? sideCls(J.side) : "dim"}">${J ? SIDE[J.side] : "-"}</td><td>${J ? f(J.confidence) : "-"}</td><td>${J ? f(J.reversal_risk) : "-"}</td>
+    <td class="${J ? sideCls(J.signal) : "dim"}" title="${esc(J ? J.reason : "")}">${J ? SIDE[J.signal] + (J.size ? ` (${(J.size * 100).toFixed(1)}%)` : "") : "-"}</td>
+    <td class="${sideCls(c.position)}">${SIDE[c.position]}${open ? ` · ${px(c.entry)}` : ""}</td><td class="${open ? cls(c.pnl_pct) : "dim"}">${open ? sign(c.pnl_pct) + "%" : "-"}</td>
+    <td>${f(c.equity)}</td><td class="${cls(c.equity / c.start_equity - 1)}">${sign((c.equity / c.start_equity - 1) * 100)}%</td>
+    <td>${esc(st.trend ?? "-")}</td><td>${f(I.rsi, 1)}</td><td>${I.atr_pct == null ? "-" : f(I.atr_pct, 3) + "%"}</td>
+    <td class="${st.volatility_covers_costs === false ? "down" : "dim"}">${st.volatility_covers_costs === false ? "변동폭 < 비용 (진입 차단)" : st.volatility_covers_costs ? "통과" : "-"}</td></tr>`;
+  }).join("");
 
   $("hist").innerHTML = S.judgments.map(j => j.kind === "judgment"
-    ? `<tr><td>${stamp(j.ts)}</td><td>${esc(j.symbol)}</td><td class="${sideCls(j.side)}">${SIDE[j.side]}</td><td>${j.confidence.toFixed(2)}</td><td>${j.reversal_risk.toFixed(2)}</td><td class="${sideCls(j.signal)}">${SIDE[j.signal]}</td><td>${esc(j.reason)}</td><td>${SIDE[j.position]}</td><td>${j.equity.toFixed(2)}</td></tr>`
-    : `<tr><td>${stamp(j.ts)}</td><td>${esc(j.symbol)}</td><td colspan="4" class="down">${j.kind === "stop_loss" ? "손절 (코드)" : "수동 청산"}</td><td>${esc(j.reason)}</td><td>${SIDE[j.position]}</td><td>${j.equity.toFixed(2)}</td></tr>`).join("");
-  $("trades").innerHTML = S.trades.map(t => `<tr><td>${stamp(t.ts)}</td><td>${esc(t.symbol)}</td><td class="${sideCls(t.side)}">${SIDE[t.side]}</td><td>${px(t.entry)}</td><td>${px(t.exit)}</td><td class="${cls(t.pnl)}">${sign(t.pnl)}</td><td class="${cls(t.pnl_pct)}">${sign(t.pnl_pct)}%</td></tr>`).join("");
+    ? `<tr><td>${stamp(j.ts)}</td><td>${esc(j.symbol)}</td><td class="${sideCls(j.side)}">${SIDE[j.side]}</td><td>${f(j.confidence)}</td><td>${f(j.reversal_risk)}</td><td class="${sideCls(j.signal)}">${SIDE[j.signal]}</td><td>${esc(j.reason)}</td><td>${SIDE[j.position]}</td><td>${f(j.equity)}</td></tr>`
+    : `<tr><td>${stamp(j.ts)}</td><td>${esc(j.symbol)}</td><td colspan="4" class="down">${esc(KIND[j.kind] || j.kind)}</td><td>${esc(j.reason)}</td><td>${SIDE[j.position]}</td><td>${f(j.equity)}</td></tr>`).join("")
+    || '<tr><td class="dim">새 캔들이 마감되면 코인마다 1회 판단합니다</td></tr>';
+  $("trades").innerHTML = S.trades.map(t => `<tr><td>${stamp(t.ts)}</td><td>${esc(t.symbol)}</td><td class="${sideCls(t.side)}">${SIDE[t.side]}</td><td>${px(t.entry)}</td><td>${px(t.exit)}</td><td class="${cls(t.pnl)}">${sign(t.pnl)}</td><td class="${cls(t.pnl_pct)}">${sign(t.pnl_pct)}%</td></tr>`).join("")
+    || '<tr><td class="dim">아직 청산 거래가 없습니다</td></tr>';
 }
 
 async function tick() {
