@@ -309,19 +309,20 @@ def test_page_inline_js_has_no_syntax_errors(page, tmp_path):
     assert r.returncode == 0, r.stderr
 
 
-@pytest.mark.parametrize("env,expect", [(None, True), ("0", False), ("1", True)])
-def test_main_wires_judge_gated_from_env(monkeypatch, env, expect):
-    ex, seen = Replay({s: walk(1, 300) for s in ("A/USDT", "B/USDT")}), {}
-    real = main_mod.Engine
-    monkeypatch.setattr(main_mod, "Engine", lambda *a, **k: (seen.update(k), real(*a, **k))[1])
+@pytest.mark.parametrize("tf,expect", [(None, "default"), ("5m", "default"), ("15m", "default"), ("1s", "1s")])
+def test_main_selects_policy_profile_from_timeframe(monkeypatch, tf, expect):
+    """TIMEFRAME 만으로 엔진이 policy.PROFILES 를 자동 선택한다 (JUDGE_GATED 는 쿨다운으로 대체돼 삭제됨)."""
+    ex = Replay({s: walk(1, 300) for s in ("A/USDT", "B/USDT")})
+    ex.parse_timeframe = lambda t: 300
     monkeypatch.setattr(main_mod, "make_exchange", lambda name: ex)
-    ex.parse_timeframe = lambda tf: 300
     monkeypatch.setenv("MODE", "jev")
     monkeypatch.setenv("SYMBOLS", "A/USDT,B/USDT")
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
-    monkeypatch.delenv("JUDGE_GATED", raising=False)
-    if env is not None:
-        monkeypatch.setenv("JUDGE_GATED", env)
-    with redirect_stdout(io.StringIO()):
+    monkeypatch.delenv("TIMEFRAME", raising=False)
+    if tf is not None:
+        monkeypatch.setenv("TIMEFRAME", tf)
+    out = io.StringIO()
+    with redirect_stdout(out):
         assert main_mod.main(["--once"]) == 0
-    assert seen["judge_gated"] is expect
+    snap = json.loads(out.getvalue())
+    assert snap["timeframe"] == (tf or "5m") and snap["profile"] == expect

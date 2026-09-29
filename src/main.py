@@ -47,8 +47,8 @@ def main(argv=None) -> int:
         else:
             logging.warning("TYPESAFE_API_KEY not set: using FakeJudge (NOT Jev)")
             judge = FakeJudge()
-        engine = Engine(ex, judge, symbols, judge_gated=os.getenv("JUDGE_GATED", "1") != "0", **common)  # JUDGE_GATED=0: 비용 게이트에 막힌 코인은 Jev 미호출 (1초봉 서비스)
-        label = f"judge={judge.name}"
+        engine = Engine(ex, judge, symbols, **common)  # 정책 프로필(policy.PROFILES)은 timeframe 으로 자동 결정
+        label = f"judge={judge.name} profile={engine.profile.name}"
 
     if args.once:
         engine.start()

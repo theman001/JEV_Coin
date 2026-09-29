@@ -16,7 +16,10 @@ from src.broker import PaperBroker
 from src.data import StaleData, fetch_closed
 from src.judge import QUESTIONS, SAFE, FakeJudge, JevJudge, Judgment, parse
 from src.engine import MAX_CONSECUTIVE_ERRORS, Engine
-from src.policy import COST_PER_SIDE, MAX_POS_FRAC, STOP_LOSS_PCT, Signal, decide
+from src.policy import COST_PER_SIDE, PROFILES, Signal, decide
+
+DEFAULT = PROFILES["default"]
+MAX_POS_FRAC, STOP_LOSS_PCT = DEFAULT.max_pos_frac, DEFAULT.stop_loss_pct
 from src.state import build_state
 from src.web import make_server
 
@@ -97,6 +100,16 @@ def test_state_position_labels_and_cost_gate():
 def test_policy(j, loss, side, size):
     sig = decide(j, loss)
     assert (sig.side, sig.size) == (side, size)
+
+
+def test_1s_profile_loosens_confidence_and_reversal_thresholds():
+    """0.5 확신도: 기본 정책(min_conf 0.6)은 관망, 1s 정책(0.45)은 진입. 반전위험 0.8: 기본(0.7 초과)은 관망, 1s(0.85 이내)는 진입."""
+    mid_conf = Judgment("long", 0.5, 0.1, "t")
+    assert decide(mid_conf, 0.0).side == "flat"
+    assert decide(mid_conf, 0.0, profile=PROFILES["1s"]).side == "long"
+    mid_reversal = Judgment("long", 0.9, 0.8, "t")
+    assert decide(mid_reversal, 0.0).side == "flat"
+    assert decide(mid_reversal, 0.0, profile=PROFILES["1s"]).side == "long"
 
 
 def test_policy_cost_gate_blocks_entry():
@@ -219,13 +232,13 @@ class Scripted:
     """항상 같은 판단을 내는 테스트용 judge. hook이 있으면 판단 도중 호출한다 (락 밖 실행 경합 재현)."""
     name = "test"
 
-    def __init__(self, side="long", hook=None):
-        self.side, self.hook, self.calls = side, hook, 0
+    def __init__(self, side="long", hook=None, conf=0.9, reversal=0.1):
+        self.side, self.hook, self.calls, self.conf, self.reversal = side, hook, 0, conf, reversal
 
     def __call__(self, state):
         self.calls += 1
         self.hook and self.hook()
-        return Judgment(self.side, 0.9, 0.1, "test")
+        return Judgment(self.side, self.conf, self.reversal, "test")
 
 
 SYMS = ("X/USDT", "Y/USDT")
@@ -370,37 +383,71 @@ def test_gated_coins_still_get_a_jev_judgment_by_default(tmp_path):
     assert j.calls == 2 and sides(e) == ["flat", "flat"] and "below trading costs" in e.judgments[-1]["reason"]
 
 
-def test_judge_gated_false_skips_jev_and_disk_when_cost_gate_blocks(tmp_path):
-    j = Scripted()
-    e = Engine(StubExchange(quiet_candles()), j, list(SYMS), timeframe="1h", interval=0.01, data_dir=tmp_path, equity=1000.0, judge_gated=False)
-    e.start()
-    saves = []
-    e._save = lambda: saves.append(1)
-    for _ in range(3):
-        e.step()
-    assert j.calls == 0 and sides(e) == ["flat", "flat"] and not e.judgments and not saves  # Jev 미호출, 기록·저장 없음
-    assert set(e.last_ts) == set(SYMS)  # 캔들은 소비 처리 (같은 캔들을 폴링마다 다시 계산하지 않는다)
-    assert all(c["judgment"] is None and c["state"]["volatility_covers_costs"] is False for c in e.snapshot()["coins"])
+def mid_vol_candles(end_ms=None, n=120):
+    """ATR% ≈ 0.012% (계산 확인) — 기본 정책(0.14%)은 막지만 1s 정책(0.0014%)은 통과하는 중간 변동폭."""
+    end_ms = end_ms or (int(time.time() * 1000) // HOUR_MS - 1) * HOUR_MS
+    close = 100 + 0.01 * np.sin(np.arange(n))
+    ts = end_ms - HOUR_MS * np.arange(n)[::-1]
+    return pd.DataFrame({"ts": ts, "open": close, "high": close + 0.005, "low": close - 0.005, "close": close, "volume": 1.0})
 
 
-def test_judge_gated_false_still_judges_when_gate_passes_and_closes_open_position_when_gate_shuts(tmp_path):
-    j, ex = Scripted(), StubExchange(candles())
-    e = Engine(ex, j, list(SYMS), timeframe="1h", interval=0.01, data_dir=tmp_path, equity=1000.0, judge_gated=False)
+def test_1s_profile_loosens_the_cost_gate_but_1s_profile_still_blocks_a_truly_dead_market(tmp_path):
+    """사용자 확정(2026-09-29): 1초봉은 처음부터 끝까지 관망이었다 → policy.PROFILES["1s"] 로 게이트를 크게 완화."""
+    mid = StubExchange(mid_vol_candles())
+    default_engine = Engine(mid, Scripted(), list(SYMS), timeframe="1h", interval=0.01, data_dir=tmp_path / "d", equity=1000.0)
+    oneS_engine = Engine(mid, Scripted(), list(SYMS), timeframe="1s", interval=0.01, data_dir=tmp_path / "s", equity=1000.0)
+    assert oneS_engine.profile.name == "1s" and default_engine.profile.name == "default"
+    default_engine.start()
+    default_engine.step()
+    assert sides(default_engine) == ["flat", "flat"] and "below trading costs" in default_engine.judgments[-1]["reason"]
+    oneS_engine.start()
+    oneS_engine.step()
+    assert sides(oneS_engine) == ["long", "long"]  # 같은 시세인데 1s 정책은 진입한다
+
+    dead = Engine(StubExchange(quiet_candles()), Scripted(), list(SYMS), timeframe="1s", interval=0.01, data_dir=tmp_path / "z", equity=1000.0)
+    dead.start()
+    dead.step()
+    assert sides(dead) == ["flat", "flat"] and dead.judge.calls == 2  # 완전 무변동(0.0012% < 0.0014%)은 1s 정책도 막지만, 판단은 여전히 기록
+
+
+def test_engine_applies_the_1s_profile_confidence_threshold_not_the_default(tmp_path):
+    """엔진이 decide() 에 self.profile 을 실제로 넘기는지: 확신도 0.5 는 기본 정책이면 관망, 1s 정책이면 진입."""
+    j = Scripted(conf=0.5)
+    e = Engine(StubExchange(candles()), j, ["X/USDT"], timeframe="1s", interval=0.01, data_dir=tmp_path, equity=1000.0)
     e.start()
     e.step()
-    assert j.calls == 2 and sides(e) == ["long", "long"]  # 게이트 통과 → 정상 판단
-    ex.rows = quiet_candles(end_ms=(int(time.time() * 1000) // HOUR_MS) * HOUR_MS).values.tolist()  # 다음 캔들: 변동폭이 비용 밑으로
+    assert e.slots["X/USDT"].side == "long"
+
+
+def test_1s_judge_cooldown_limits_calls_but_indicators_keep_updating(tmp_path, monkeypatch):
+    """1초봉 쿨다운(30초): 캔들이 새로 마감돼도 쿨다운 안이면 Jev 를 안 부르고, 지표는 계속 갱신되며, 쿨다운이 지나면 그때 판단한다."""
+    base = (int(time.time() * 1000) // HOUR_MS) * HOUR_MS
+    ex, j = StubExchange(candles(end_ms=base)), Scripted()
+    e = Engine(ex, j, ["X/USDT"], timeframe="1s", interval=0.01, data_dir=tmp_path, equity=1000.0)
+    assert e.profile.judge_cooldown_s == 30.0
+    clock = [1_700_000_000.0]
+    monkeypatch.setattr("src.engine.time.time", lambda: clock[0])
+    e.start()
     e.step()
-    assert j.calls == 2 and sides(e) == ["flat", "flat"]  # Jev 를 부르지 않고 포지션 정리
-    assert [r["kind"] for r in list(e.judgments)[-2:]] == ["gate_flat", "gate_flat"] and e.slots["X/USDT"].n_trades == 1
-    assert all(c["judgment"] is None for c in e.snapshot()["coins"])  # 화면에 옛 판단이 남아 현재 상태처럼 보이면 안 된다
+    assert j.calls == 1 and e.slots["X/USDT"].side == "long"  # 첫 판단은 즉시 (쿨다운 시작)
+    price1 = e.ind["X/USDT"]["price"]
+
+    clock[0] += 5  # 5초 뒤 새 캔들 도착 — 쿨다운(30초) 안
+    ex.rows = candles(end_ms=base + 1000, drift=50).values.tolist()
+    e.step()
+    assert j.calls == 1 and e.ind["X/USDT"]["price"] != price1  # Jev 는 안 불렀지만 지표는 최신 캔들로 갱신
+    assert e.last_ts["X/USDT"] == base  # 캔들을 소비 처리하지 않음 (다음 폴링에 다시 시도)
+
+    clock[0] += 26  # 총 31초 경과: 쿨다운을 지남
+    e.step()
+    assert j.calls == 2 and e.last_ts["X/USDT"] == base + 1000  # 쿨다운이 풀리자 그제서야 판단
 
 
 def test_engine_survives_dead_flat_market_with_zero_volume(tmp_path):
     """1초봉에선 거래 없는 구간이 흔하다: 가격 불변·거래량 0 이어도 지표가 NaN/0 나눗셈으로 엔진을 죽이면 안 된다."""
     n = 120
     df = pd.DataFrame({"ts": (int(time.time() * 1000) // HOUR_MS - 1) * HOUR_MS - HOUR_MS * np.arange(n)[::-1], "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0, "volume": 0.0})
-    e = Engine(StubExchange(df), Scripted(), list(SYMS), timeframe="1h", interval=0.01, data_dir=tmp_path, equity=1000.0, judge_gated=False)
+    e = Engine(StubExchange(df), Scripted(), list(SYMS), timeframe="1h", interval=0.01, data_dir=tmp_path, equity=1000.0)
     e.start()
     e.step()
     assert e.error is None and sides(e) == ["flat", "flat"]

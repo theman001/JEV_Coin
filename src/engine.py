@@ -16,8 +16,7 @@ from pathlib import Path
 
 from .broker import PaperBroker
 from .data import StaleData, fetch_closed
-from .judge import SAFE
-from .policy import MAX_SESSION_LOSS, STOP_LOSS_PCT, Signal, decide
+from .policy import Signal, decide, profile_for
 from .state import build_state, indicators
 
 log = logging.getLogger(__name__)
@@ -28,16 +27,16 @@ class Engine:
     page = "index.html"
 
     def __init__(self, ex, judge, symbols: list[str], timeframe: str = "5m", interval: float = 10, data_dir=None,
-                 equity: float = 100.0, judge_gated: bool = True):
-        """judge_gated=False: 비용 게이트에 막힌 코인은 Jev 를 부르지 않는다 (결과가 어차피 쓰이지 않는다 — decide 가 게이트를 먼저 적용). 1초봉처럼 호출이 폭증하는 주기용."""
+                 equity: float = 100.0):
+        """정책 임계값·손절·게이트는 timeframe 으로 고른 Profile(policy.py) 하나를 이 엔진(=이 서비스)의 전 코인이 공유한다."""
         self.ex, self.judge, self.symbols, self.timeframe, self.interval = ex, judge, list(symbols), timeframe, interval
-        self.judge_gated = judge_gated
+        self.profile = profile_for(timeframe)
         self.data_dir = Path(data_dir) if data_dir else None
         self.lock = threading.RLock()
         self.start_equity = equity
         self.slots = {s: PaperBroker(equity / len(self.symbols), symbol=s) for s in self.symbols}
         self.running = False
-        self.last_ts, self.prices, self.ind, self.state, self.last_j = {}, {}, {}, {}, {}  # 코인별
+        self.last_ts, self.last_judge_at, self.prices, self.ind, self.state, self.last_j = {}, {}, {}, {}, {}, {}  # 코인별
         self.errors, self.err_msg = {}, {}  # 코인별 연속 오류 횟수 / 마지막 오류 메시지
         self.judgments = deque(maxlen=100)  # 판단/손절/청산 이벤트 (최신이 뒤)
         self.curve = deque(maxlen=1000)  # (ts, 포트폴리오 자산) 폴링마다 1점 — 메모리 전용
@@ -49,7 +48,7 @@ class Engine:
         with self.lock:
             if self.running:
                 return
-            self.running, self.error, self.last_ts = True, None, {}  # last_ts 초기화: 시작 즉시 코인마다 마지막 마감 캔들로 판단
+            self.running, self.error, self.last_ts, self.last_judge_at = True, None, {}, {}  # 초기화: 시작 즉시 코인마다 마지막 마감 캔들로 판단(쿨다운 무관)
             self.errors.clear()
             self.err_msg.clear()
             self._save()
@@ -119,25 +118,21 @@ class Engine:
                 return None
             b = self.slots[sym]
             self.prices[sym] = price
-            stopped = b.check_stop(price, STOP_LOSS_PCT)
+            stopped = b.check_stop(price, self.profile.stop_loss_pct)
             if stopped:
-                self._record(sym, "stop_loss", price, reason=f"stop loss {STOP_LOSS_PCT}%")
+                self._record(sym, "stop_loss", price, reason=f"stop loss {self.profile.stop_loss_pct}%")
                 self._save()
             self.ind[sym] = indicators(df)
-            self.state[sym] = st = build_state(df, sym, self.timeframe, (b.side, b.pnl_pct(price)))
+            self.state[sym] = st = build_state(df, sym, self.timeframe, (b.side, b.pnl_pct(price)), self.profile.min_atr_cost_mult)
             if stopped:  # 손절 직후엔 이 캔들에서 재진입하지 않는다 (휩쏘 반복 방지)
                 self.last_ts[sym] = ts
             elif ts != self.last_ts.get(sym):
-                if not self.judge_gated and not st["volatility_covers_costs"]:
-                    sig = decide(SAFE, self._loss(), False)  # 어차피 flat (게이트가 최우선): Jev 호출·판단 기록을 건너뛴다
-                    was = b.side
-                    b.rebalance(sig, price)
-                    self.last_ts[sym] = ts
-                    self.last_j.pop(sym, None)
-                    if was != b.side:  # 보유 중이던 포지션이 게이트로 청산된 경우만 기록 (1초봉에서 디스크를 초당 수십 번 쓰지 않게)
-                        self._record(sym, "gate_flat", price, reason=sig.reason)
-                        self._save()
+                # 쿨다운 중이면 이번 폴링은 건너뛴다 (last_ts 는 그대로 두어 다음 폴링에 다시 시도) — 1초봉처럼 캔들이 폴링마다
+                # 마감되는 주기에서 Jev 호출량을 묶는다. 게이트(비용 미달)는 여기서 거르지 않는다: Jev 는 항상 부르고
+                # decide() 가 게이트를 적용해 flat 으로 강제한다 (판단 이력이 보정 분석의 원자료가 된다).
+                if time.time() - self.last_judge_at.get(sym, 0.0) < self.profile.judge_cooldown_s:
                     return None
+                self.last_judge_at[sym] = time.time()
                 return {"sym": sym, "ts": ts, "price": price, "state": st}
         return None
 
@@ -146,7 +141,7 @@ class Engine:
             if not self.running:  # 락 밖 실행 경합: Jev 를 기다리는 동안 정지됐으면 결과를 버린다
                 return
             sym, price = p["sym"], p["price"]
-            sig = decide(j, self._loss(), p["state"]["volatility_covers_costs"])
+            sig = decide(j, self._loss(), p["state"]["volatility_covers_costs"], self.profile)
             self.slots[sym].rebalance(sig, price)
             self.last_ts[sym] = p["ts"]
             self.last_j[sym] = (j, sig, time.time())
@@ -162,9 +157,9 @@ class Engine:
                 if n >= MAX_CONSECUTIVE_ERRORS:
                     self._flatten("blind_flat", f"{n} consecutive errors", only={s})
             kill = all(self.errors.get(s, 0) >= MAX_CONSECUTIVE_ERRORS for s in self.slots)
-            loss = self._loss()
-            if loss >= MAX_SESSION_LOSS:  # 리스크 거부권: 포트폴리오 세션 손실 한도 → 즉시 전 코인 청산 (이후 신규 진입은 decide 가 계속 차단)
-                self._flatten("risk_flat", f"portfolio session loss {loss * 100:.2f}% >= {MAX_SESSION_LOSS * 100:.0f}% limit")
+            loss, limit = self._loss(), self.profile.max_session_loss
+            if loss >= limit:  # 리스크 거부권: 포트폴리오 세션 손실 한도 → 즉시 전 코인 청산 (이후 신규 진입은 decide 가 계속 차단)
+                self._flatten("risk_flat", f"portfolio session loss {loss * 100:.2f}% >= {limit * 100:.0f}% limit")
             self.curve.append((self.polled_at, self._equity()))
             self.error = "; ".join(f"{s}: {m}" for s, m in self.err_msg.items()) or None
             if kill:
@@ -193,9 +188,10 @@ class Engine:
             trades = sorted((t for b in self.slots.values() for t in b.trades), key=lambda t: t["ts"])[-20:][::-1]
             return {
                 "mode": "jev", "now": time.time(), "running": self.running, "symbols": self.symbols, "timeframe": self.timeframe,
-                "judge": self.judge.name, "dry_run": True, "poll_seconds": self.interval, "polled_at": self.polled_at, "error": self.error,
+                "judge": self.judge.name, "profile": self.profile.name, "dry_run": True, "poll_seconds": self.interval,
+                "polled_at": self.polled_at, "error": self.error,
                 "coins": coins, "equity": eq, "start_equity": self.start_equity, "return_pct": (eq / self.start_equity - 1) * 100,
-                "realized_pnl": realized, "unrealized_pnl": unreal, "session_loss_pct": self._loss() * 100, "loss_limit_pct": MAX_SESSION_LOSS * 100,
+                "realized_pnl": realized, "unrealized_pnl": unreal, "session_loss_pct": self._loss() * 100, "loss_limit_pct": self.profile.max_session_loss * 100,
                 "exposure_pct": 100 * sum(b.side != "flat" for b in self.slots.values()) / len(self.slots),
                 "n_trades": sum(b.n_trades for b in self.slots.values()), "n_wins": sum(b.n_wins for b in self.slots.values()),
                 "judgments": list(self.judgments)[::-1], "trades": trades, "curve": list(self.curve)}

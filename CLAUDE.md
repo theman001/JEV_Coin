@@ -32,7 +32,7 @@ ATR% 중앙값 vs 왕복 비용(테이커 0.05%×2 + 슬리피지 가정 0.04% =
 
 - **BTC/ETH 1~5분봉은 평균 변동폭이 왕복 비용보다 작다** → 수수료 게이트(`volatility_covers_costs`)가 대부분 진입을 막는다. 이는 버그가 아니라 의도된 동작. 수수료 등급(메이커/VIP)이 좋아지거나 더 긴 봉/변동성 큰 심볼을 써야 한다.
 - 기본값: `SOL/USDT`, `5m`.
-- **1초봉(Binance 현물 `1s`, 2026-09-28 실측 1000봉)**: ATR%(14) 중앙값 BTC 0.005 / ETH 0.008 / SOL 0.012 / XRP 0.020 / DOGE 0.022%, 최대 0.026~0.064% → **모두 왕복 비용 0.14% 의 절반 미만이라 비용 게이트가 진입을 전부 막는다**(1초봉 |수익률| 중앙값 0.002~0.013%, 거래 없는 봉 2~12%). 1초봉 서비스(`jev-1s`)는 이 상태를 보여주는 용도이며 거래가 없는 게 정상이다.
+- **1초봉(Binance 현물 `1s`, 2026-09-28 실측 1000봉)**: ATR%(14) 중앙값 BTC 0.005 / ETH 0.008 / SOL 0.012 / XRP 0.020 / DOGE 0.022%, 최대 0.026~0.064% → 기본 정책(`policy.PROFILES["default"]`, 비용의 1배)으로는 **왕복 비용 0.14% 의 절반 미만이라 진입이 전부 막힌다**(1초봉 |수익률| 중앙값 0.002~0.013%, 거래 없는 봉 2~12%). **2026-09-29 사용자 확정**: `jev-1s` 서비스는 처음부터 끝까지 관망이던 걸 실제로 판단·거래가 보이게 바꾸고 싶다고 해서 `policy.PROFILES["1s"]`(비용 게이트 0.01배·확신도 0.45·반전위험 0.85, 30초 호출 쿨다운)로 전환했다 — 상세 근거는 `src/policy.py` 주석.
 
 Jev 상세 스펙·한계는 [JEV_AI_GUIDE.md](JEV_AI_GUIDE.md)를 먼저 읽을 것.
 
@@ -58,7 +58,7 @@ src/
   data.py     ccxt로 닫힌 OHLCV 수집 (공개 엔드포인트, 키 불필요) + stale 검사
   state.py    pandas + ta로 지표 계산 → 압축 State(의미 라벨 + 현재 포지션 라벨 + 수수료 커버 여부)
   judge.py    Jev 호출 (원자적 질문 N개 병렬) + 오프라인용 FakeJudge, 실패 시 SAFE(flat)
-  policy.py   Judgment → Signal(long/short/flat + size) + 리스크 거부권 + 비용/손절 상수
+  policy.py   Judgment → Signal(long/short/flat + size) + 리스크 거부권 + 비용 상수. 임계값은 봉 주기별 `Profile`(`PROFILES["default"|"1s"]`, `profile_for(timeframe)`)로 묶임 — 확신도·반전위험·비용게이트 문턱·Jev 호출 쿨다운
   broker.py   PaperBroker (드라이런 체결, 비용 차감, 코드 손절)
   strategies.py  문헌 기반 차트 규칙 5종(SMA 교차±밴드, 채널 돌파, RSI>50, 필터 5%) → 보유 신호 0/1. close[t] 까지만 사용(룩어헤드 없음, 롱 전용). 라이브 봇은 아직 안 씀
   features.py    차트 예측 계산식 87개(추세·구조·레벨·모멘텀·스퀴즈·거래량·주문흐름(테이커 델타/CVD)·캔들·시간대·BTC 선행). 전 열 인과적·ATR 정규화. 라이브 봇은 아직 안 씀
@@ -75,7 +75,7 @@ src/
   web.py      표준 라이브러리 HTTP 서버 + Basic 인증 + CSRF(JSON 콘텐츠 타입만 POST 허용). 의존성 추가 없음
   trend.py    **MODE=trend** 추세추종 포트폴리오 모의 엔진(STRATEGY_RESEARCH.md §14): 4h SMA 20/50(strategies.sma_cross 재사용), 코인당 독립 슬롯(PaperBroker 재사용), 롱 전용·손절 없음, 캔들 마감 시에만 신호·저장(trend_state.json/trend.jsonl). 코인별 오류 격리(킬스위치 없음), 정지=일시정지(포지션 유지). 스냅샷에 jev-liq 수집 현황(`collect_liq.stats`, 30초 캐시)을 실어 헤더 배지로 표시 — 10분 무수신이면 경고
   static/index.html   모니터링 UI (Jev 봇, 바닐라 JS, 2초 폴링) · static/trend.html 추세추종 UI (엔진의 page 속성으로 web.py 가 선택)
-  main.py     엔트리: 엔진 스레드 + 웹. `MODE=jev`(기본)|`trend`. `JUDGE_GATED=0`(1초봉): 비용 게이트에 막힌 코인은 Jev 미호출. `--once` 는 웹 없이 폴링 1회 (Jev 연결 확인용). 모드별 기본값(코인·거래소·주기·자본)은 DEFAULTS
+  main.py     엔트리: 엔진 스레드 + 웹. `MODE=jev`(기본)|`trend`. `--once` 는 웹 없이 폴링 1회 (Jev 연결 확인용). 모드별 기본값(코인·거래소·주기·자본)은 DEFAULTS. Jev 봇의 정책 임계값은 `TIMEFRAME` 으로 `policy.profile_for()` 가 자동 결정(아래 policy.py 항목)
 Dockerfile · docker-compose.example.yml(템플릿, 추적; 서비스 4개: jev-coin·jev-1s·jev-trend·jev-liq) · docker-compose.yml(**비밀값 하드코딩, .gitignore**) · .env.example · .dockerignore   ARM64/OMV 배포
 tests/        정책·state·브로커·엔진·웹·SDK 경로 테스트 (Jev/거래소 호출 없이 동작해야 함)
 ```
@@ -114,12 +114,13 @@ set -a; . ./.env; set +a; .venv/bin/python -m src.backtest --tfs 4h 1d --jev-tfs
 DATA_DIR=data .venv/bin/python -m src.collect_liq
 ```
 
-환경변수는 전부 [.env.example](.env.example) 에 있다: `TYPESAFE_API_KEY`, `WEB_USER`, `WEB_PASSWORD`, `WEB_PORT`(호스트 포트), `SYMBOLS`, `TIMEFRAME`, `EXCHANGE`, `POLL_SECONDS`, 1초봉용 `PORT_1S`(8786), 추세추종용 `TREND_PORT`(8788)·`TREND_EQUITY`(원, 기본 1,000,000). 앱 내부: `MODE`(jev|trend), `JUDGE_GATED`(기본 1), `DATA_DIR` — compose 가 서비스별로 지정. 앱 내부 전용: `DATA_DIR`(기본 `data`, 컨테이너 `/data`), `PORT`(8787). 거래소 API 키는 실주문을 구현하지 않았으므로 아직 없다.
+환경변수는 전부 [.env.example](.env.example) 에 있다: `TYPESAFE_API_KEY`, `WEB_USER`, `WEB_PASSWORD`, `WEB_PORT`(호스트 포트), `SYMBOLS`, `TIMEFRAME`, `EXCHANGE`, `POLL_SECONDS`, 1초봉용 `PORT_1S`(8786), 추세추종용 `TREND_PORT`(8788)·`TREND_EQUITY`(원, 기본 1,000,000). 앱 내부: `MODE`(jev|trend), `DATA_DIR` — compose 가 서비스별로 지정. 앱 내부 전용: `DATA_DIR`(기본 `data`, 컨테이너 `/data`), `PORT`(8787). 거래소 API 키는 실주문을 구현하지 않았으므로 아직 없다.
+정책 임계값(확신도·반전위험·비용게이트·호출 쿨다운)은 환경변수가 아니라 `src/policy.py` 의 `PROFILES` 에 `TIMEFRAME` 문자열로 고정돼 있다 — 시행착오로 이 값을 조정하려면 새 프로필 이름을 추가할 것(기존 프로필을 결과 보고 고치지 않는다, 원칙 10).
 `.env` 는 `.gitignore`·`.dockerignore` 대상. **사용자가 실제 키를 넣은 `.env` 가 프로젝트 루트에 있다 — 내용을 출력/로그/커밋하지 말 것.**
 
 ## 배포 (Radxa Rock 5 / OMV8 / Docker)
 
-- **서비스 4개**(같은 이미지·볼륨 `jev-data`, 파일명 분리): `jev-coin`(:8787 Jev 봇 5m) · `jev-1s`(:8786 같은 봇의 1초봉, `TIMEFRAME=1s POLL_SECONDS=1 JUDGE_GATED=0`, `DATA_DIR=/data/1s` 로 상태 파일 분리) · `jev-trend`(:8788 추세추종, `MODE=trend`, 규칙·코인·주기는 사전 고정 설계라 compose 에 고정) · `jev-liq`(청산 수집, 포트 없음). 세 서비스 모두 `x-app` 앵커로 같은 `build` 를 가진다. 런타임 의존성 37개가 aarch64 cp314 휠로 존재함을 `pip download --platform` 으로 확인(`ta` 제외, 순수 sdist).
+- **서비스 4개**(같은 이미지·볼륨 `jev-data`, 파일명 분리): `jev-coin`(:8787 Jev 봇 5m, `policy.PROFILES["default"]`) · `jev-1s`(:8786 같은 봇의 1초봉, `TIMEFRAME=1s POLL_SECONDS=1`, `policy.PROFILES["1s"]` 자동 적용, `DATA_DIR=/data/1s` 로 상태 파일 분리) · `jev-trend`(:8788 추세추종, `MODE=trend`, 규칙·코인·주기는 사전 고정 설계라 compose 에 고정) · `jev-liq`(청산 수집, 포트 없음). 세 서비스 모두 `x-app` 앵커로 같은 `build` 를 가진다. 런타임 의존성 37개가 aarch64 cp314 휠로 존재함을 `pip download --platform` 으로 확인(`ta` 제외, 순수 sdist).
 - 사용자는 compose 파일을 OMV compose 플러그인에 붙여넣고 Up 한다. `build.context` 는 **git URL** (`https://github.com/theman001/JEV_Coin.git#main`) → 저장소에 Dockerfile 이 있어야 한다.
 - **`docker-compose.yml` 은 `.env` 값이 하드코딩된 로컬 전용 파일 (`.gitignore`, `.dockerignore`). 절대 커밋/출력/로그하지 말 것.** 추적되는 템플릿은 `docker-compose.example.yml` 이고, 값 변경 시 둘을 함께 유지한다. 저장소는 Public 이라 비밀값이 한 번 push 되면 회수가 어렵다 — 커밋 전 `git grep --cached -F <값>` 로 확인.
 - 템플릿은 `environment:` 의 `${VAR}` 치환 방식 (OMV 플러그인은 `.env` 를 `<이름>.env` 로 두고 `--env-file` 로 넘긴다 → `env_file:` 은 쓰지 않는다). `WEB_PASSWORD` 는 `${...:?}` 로 필수 지정. 하드코딩 시 값의 `$` 는 `$$` 로 이스케이프.
@@ -149,7 +150,8 @@ DATA_DIR=data .venv/bin/python -m src.collect_liq
 
 - **Jev SDK 확정 사항** (typesafe-sdk 0.7.2, 설치본에서 직접 확인): 응답은 `resp.answers[name]` 로 접근 (`.choice/.confidence/.probabilities`, `.noul`, `.score`). `resp.choices/nouls/scores` 도 동일 객체를 준다. 예외는 `TypeSafeError` 계열(`TypeSafeRateLimitError`, `TypeSafeAPITimeoutError` 등). 기본 재시도 2회. 테스트는 `TypeSafeClient(transport=httpx2.MockTransport(...))` 로 네트워크 없이 SDK 경로를 통과시킨다.
 - **실서버 E2E 검증 완료** (2026-09-28, 실제 Jev 키 + Binance 실데이터, 웹 API로 구동): Jev 호출 7회 전부 200 (202~267ms), 호출 수 == 판단 수(폴링 중 호출 없음), 캔들 마감 시 정확히 +1회, 5개 코인 전환·청산·정책 게이트(BTC 비용 게이트) 정상, 회계 항등식 유지, 종가/EMA/RSI 를 pandas 로 독립 계산해 소수점까지 일치, 서버 로그 WARNING/ERROR 0건.
-- **1초봉 E2E** (2026-09-28, 실제 Binance 1초 캔들, 가짜 Jev 키로 호출 유무 검증): 12초간 캔들이 1초마다 놓침 없이 갱신, stale 오탐 0/12, **Jev 호출 0회**(호출됐다면 실패 경고가 찍혔을 것), 디스크는 시작 시 상태 파일 1개뿐. 폴링당 지표 계산 5코인 약 40ms. 1초봉 데이터엔 거래량 0·가격 불변 구간이 흔해 `state._ratio` 가 0/0 을 NaN 대신 0(낮음/얇음)으로 처리한다.
+- **1초봉 E2E** (2026-09-28, 실제 Binance 1초 캔들): 12초간 캔들이 1초마다 놓침 없이 갱신, stale 오탐 0/12(최소 5초 하한 덕분). 폴링당 지표 계산 5코인 약 40ms. 1초봉 데이터엔 거래량 0·가격 불변 구간이 흔해 `state._ratio` 가 0/0 을 NaN 대신 0(낮음/얇음)으로 처리한다.
+- **정책 프로필 전환** (2026-09-29): `jev-1s` 를 완화된 `"1s"` 프로필로 바꿔 처음부터 끝까지 관망이던 문제를 해결. 30초 쿨다운으로 호출량은 하루 5코인 합 14,400회(≈$0.2/일) — 쿨다운이 없었다면 완화된 게이트에서도 하루 5코인 합 최대 43만+ 회(≈$5~6/일)였을 것. 기존 `JUDGE_GATED` 메커니즘(게이트 차단 시 Jev 미호출)은 이 쿨다운으로 완전히 대체·삭제 — 이제 Jev 는 게이트와 무관하게 쿨다운마다 항상 불리고, `decide()` 가 게이트를 적용해 필요하면 flat 으로 강제한다(판단 이력이 항상 남는다). 실서버 확인(2026-09-29, 실제 Jev, 40초): 판단 10건(5코인×약 2라운드, 쿨다운 간격과 일치), 코인별 게이트 통과 여부가 실제로 갈림(BTC/XRP 일부 차단·SOL/ETH/DOGE 통과), 오류 0건.
 - **멀티코인 E2E** (2026-09-28, 실제 Jev 키 + Binance 실데이터): 5코인을 동시에 판단(5회 병렬 호출, 경고 0건), 판단 5행 기록, 중지 시 DOGE 숏 청산·상태 저장 확인. 코인당 최대 노출은 슬롯의 25%=전체의 5%라 손익이 작게 보이고(왕복 0.14% → 전체 -0.007%) 5% 손실 한도는 사실상 안전망이다.
 - **실서버에서 아직 못 본 것**: 손절 실발동(단위테스트만), 수 시간 이상 장기 가동, Jev 실장애/킬스위치 실발동(모의로만), 여러 캔들에 걸친 판단 추이. OMV 첫 가동 후 판단 이력(`/data/judgments.jsonl`)과 웹으로 확인할 것.
 - 검증 중 코인 전환으로 강제 청산한 모의거래는 전부 비용만큼 손실(-0.14%/건)이었다 — 전략 성과가 아니라 테스트 부산물이므로 성과 평가에 쓰지 말 것 (실제 계정 상태는 임시 DATA_DIR 이라 남지 않음).

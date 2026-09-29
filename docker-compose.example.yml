@@ -7,7 +7,7 @@
 #
 # 서비스 3개 (같은 이미지, 같은 볼륨 jev-data — 파일 이름이 겹치지 않는다):
 #   jev-coin  Jev 판단 단타 봇, 5코인 동시 (모의, Binance)            → :8787   jev_state.json, judgments.jsonl
-#   jev-1s    Jev 판단 단타 봇, 1초봉 5코인 (모의, Binance)             → :8786   1s/jev_state.json, 1s/judgments.jsonl  (비용 게이트가 진입을 전부 막는 게 정상)
+#   jev-1s    Jev 판단 단타 봇, 1초봉 5코인 (모의, Binance)             → :8786   1s/jev_state.json, 1s/judgments.jsonl  (완화된 정책(policy.PROFILES["1s"]) 적용, 30초 쿨다운)
 #   jev-trend 4h SMA 20/50 추세추종 5코인 포트폴리오 (모의, Upbit KRW) → :8788   trend_state.json, trend.jsonl  (STRATEGY_RESEARCH.md §14)
 #   jev-liq   Binance 강제청산 수집기 (전 심볼, 앞으로 쌓는 데이터)     → 포트 없음 liq/YYYY-MM-DD.jsonl
 # 필요 없는 서비스는 통째로 지우면 됩니다.
@@ -56,12 +56,12 @@ services:
       WEB_USER: ${WEB_USER:-admin}
       WEB_PASSWORD: ${WEB_PASSWORD:?.env 에 WEB_PASSWORD 를 설정하세요}
       SYMBOLS: ${SYMBOLS:-SOL/USDT,ETH/USDT,BTC/USDT,XRP/USDT,DOGE/USDT}
-      # 1초봉: 1초 변동폭(ATR% 0.005~0.06%)이 왕복 비용 0.14% 보다 훨씬 작아 비용 게이트가 진입을 전부 막는다 (CLAUDE.md '단타 현실 체크').
-      # JUDGE_GATED=0: 게이트에 막힌 코인은 Jev 를 부르지 않는다 (결과가 어차피 안 쓰임 — 안 그러면 하루 43만 회 호출).
+      # TIMEFRAME=1s 를 엔진이 보고 policy.PROFILES["1s"] 를 자동으로 쓴다(사용자 확정 2026-09-29):
+      # 비용 게이트·확신도·반전위험 문턱을 크게 완화하고, 대신 코인당 30초에 한 번만 Jev 를 부른다(쿨다운) — 1초마다 부르면 하루 43만+ 회.
+      # 상세 수치·근거는 src/policy.py 주석과 CLAUDE.md '단타 현실 체크' 참고. 성과 근거 없음, 관찰용.
       TIMEFRAME: 1s
       EXCHANGE: binance
       POLL_SECONDS: "1"
-      JUDGE_GATED: "0"
       PAPER_EQUITY: ${PAPER_EQUITY:-100}
       DATA_DIR: /data/1s # 같은 볼륨의 하위 폴더: jev-coin 의 jev_state.json·judgments.jsonl 과 겹치지 않는다
       TZ: ${TZ:-Asia/Seoul}

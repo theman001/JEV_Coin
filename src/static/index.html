@@ -44,7 +44,7 @@ h2{font-size:13px;margin:0 0 8px;color:var(--dim);font-weight:600}
 <main>
 <header>
   <h1>JEV Coin</h1><span class="badge">DRY-RUN (모의매매)</span><span id="judge" class="badge"></span>
-  <span id="tf" class="badge"></span>
+  <span id="tf" class="badge"></span><span id="profile" class="badge"></span>
 </header>
 
 <div class="bar">
@@ -128,6 +128,8 @@ function render() {
   $("judge").textContent = S.judge === "jev" ? "판단: Jev" : "판단: FakeJudge (테스트용, Jev 아님)";
   $("judge").className = "badge" + (S.judge === "jev" ? "" : " warn");
   $("tf").textContent = S.timeframe + " 캔들 · " + S.symbols.length + "코인 동시";
+  $("profile").textContent = "정책: " + S.profile;
+  $("profile").title = "봉 주기별 임계값 묶음(policy.PROFILES) — 확신도/반전위험/비용게이트 문턱, 판단 호출 간격(쿨다운)";
   document.title = "JEV Coin · " + S.timeframe;  // 5m/1s 서비스 탭을 구분
   $("go").disabled = busy || S.running; $("halt").disabled = busy || !S.running;
   $("dot").className = "dot" + (S.running ? (stale ? " stale" : " on") : "");
@@ -159,7 +161,7 @@ function render() {
   $("hist").innerHTML = S.judgments.map(j => j.kind === "judgment"
     ? `<tr><td>${stamp(j.ts)}</td><td>${esc(j.symbol)}</td><td class="${sideCls(j.side)}">${SIDE[j.side]}</td><td>${f(j.confidence)}</td><td>${f(j.reversal_risk)}</td><td class="${sideCls(j.signal)}">${SIDE[j.signal]}</td><td>${esc(j.reason)}</td><td>${SIDE[j.position]}</td><td>${f(j.equity)}</td></tr>`
     : `<tr><td>${stamp(j.ts)}</td><td>${esc(j.symbol)}</td><td colspan="4" class="down">${esc(KIND[j.kind] || j.kind)}</td><td>${esc(j.reason)}</td><td>${SIDE[j.position]}</td><td>${f(j.equity)}</td></tr>`).join("")
-    || `<tr><td class="dim">${S.coins.length && S.coins.every(c => c.state.volatility_covers_costs === false) ? "전 코인이 비용 게이트(변동폭 < 왕복 비용)에 막혀 있어 Jev 를 부르지 않습니다" : "새 캔들이 마감되면 코인마다 1회 판단합니다"}</td></tr>`;
+    || '<tr><td class="dim">새 캔들이 마감되면 코인마다 1회 판단합니다(쿨다운 중이면 다음 캔들로 넘어갑니다)</td></tr>';
   $("trades").innerHTML = S.trades.map(t => `<tr><td>${stamp(t.ts)}</td><td>${esc(t.symbol)}</td><td class="${sideCls(t.side)}">${SIDE[t.side]}</td><td>${px(t.entry)}</td><td>${px(t.exit)}</td><td class="${cls(t.pnl)}">${sign(t.pnl)}</td><td class="${cls(t.pnl_pct)}">${sign(t.pnl_pct)}%</td></tr>`).join("")
     || '<tr><td class="dim">아직 청산 거래가 없습니다</td></tr>';
 }

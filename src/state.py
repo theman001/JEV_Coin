@@ -4,7 +4,7 @@ from ta.momentum import RSIIndicator
 from ta.trend import EMAIndicator
 from ta.volatility import AverageTrueRange
 
-from .policy import COST_PER_SIDE, MIN_ATR_COST_MULT
+from .policy import COST_PER_SIDE, PROFILES
 
 MIN_BARS = 60  # EMA50 + 여유
 
@@ -37,8 +37,10 @@ def indicators(df: pd.DataFrame) -> dict:
     }
 
 
-def build_state(df: pd.DataFrame, symbol: str, timeframe: str, position: tuple[str, float] = ("flat", 0.0)) -> dict:
-    """position = (side, 진입가 대비 미실현 손익 %). Jev가 보유/전환/청산을 고를 수 있게 라벨로 넘긴다."""
+def build_state(df: pd.DataFrame, symbol: str, timeframe: str, position: tuple[str, float] = ("flat", 0.0),
+                 min_atr_cost_mult: float = PROFILES["default"].min_atr_cost_mult) -> dict:
+    """position = (side, 진입가 대비 미실현 손익 %). Jev가 보유/전환/청산을 고를 수 있게 라벨로 넘긴다.
+    min_atr_cost_mult: 봉 주기별 Profile(policy.py) 값 — 엔진이 넘겨준다. 기본은 5m 기준(왕복 비용의 1배)."""
     i = indicators(df)
     price, side, pnl_pct = i["price"], position[0], position[1]
     return {
@@ -52,7 +54,7 @@ def build_state(df: pd.DataFrame, symbol: str, timeframe: str, position: tuple[s
         "volatility": _bucket(i["volatility_ratio"], 0.7, 1.5, ("low", "normal", "high")),
         "volume": _bucket(i["volume_ratio"], 0.5, 2.0, ("thin", "normal", "spike")),
         # 변동폭이 왕복 수수료·슬리피지를 넘는가 (코드가 계산한 참/거짓; 정책의 진입 게이트로도 쓴다)
-        "volatility_covers_costs": bool(i["atr_pct"] >= MIN_ATR_COST_MULT * 2 * COST_PER_SIDE * 100),
+        "volatility_covers_costs": bool(i["atr_pct"] >= min_atr_cost_mult * 2 * COST_PER_SIDE * 100),
         "current_position": side,
         "position_pnl": "none" if side == "flat" else _bucket(pnl_pct, -0.1, 0.1, ("losing", "near breakeven", "profitable")),
     }
