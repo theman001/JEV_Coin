@@ -22,6 +22,7 @@ button:disabled,select:disabled{opacity:.4;cursor:not-allowed}
 .dot{width:9px;height:9px;border-radius:50%;background:var(--dim);display:inline-block;margin-right:6px}
 .dot.on{background:var(--up)}.dot.stale{background:var(--warn)}
 .err{background:#3a1d1d;border:1px solid var(--down);color:#ffb4b0;border-radius:8px;padding:8px 12px;margin-bottom:12px;display:none}
+.note{background:#332a10;border:1px solid var(--warn);color:#f0d68a;border-radius:8px;padding:8px 12px;margin-bottom:12px;display:none}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:12px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-width:0}
 .card h3{margin:0 0 6px;font-size:12px;font-weight:500;color:var(--dim)}
@@ -54,6 +55,7 @@ h2{font-size:13px;margin:0 0 8px;color:var(--dim);font-weight:600}
   <span class="sub">코인별 독립 슬롯 (자본 ÷ 코인 수) · 손실 한도는 포트폴리오 전체 기준</span>
 </div>
 <div id="err" class="err"></div>
+<div id="note" class="note"></div>
 
 <div class="grid">
   <div class="card"><h3>총 수익률</h3><div class="big" id="ret">-</div><div class="sub" id="eq">-</div></div>
@@ -135,6 +137,7 @@ function render() {
   $("dot").className = "dot" + (S.running ? (stale ? " stale" : " on") : "");
   $("status").textContent = S.running ? (stale ? "실행 중 · 데이터 갱신 지연" : "실행 중") + (age != null ? ` · ${age.toFixed(0)}초 전 갱신` : "") : "중지됨";
   $("err").style.display = S.error ? "block" : "none"; $("err").textContent = S.error || "";
+  $("note").style.display = S.symbols_note ? "block" : "none"; $("note").textContent = S.symbols_note || "";
 
   $("ret").innerHTML = `<span class="${cls(S.return_pct)}">${sign(S.return_pct)}%</span>`;
   $("eq").textContent = `자산 ${S.equity.toFixed(2)} / 시작 ${S.start_equity.toFixed(0)}`;

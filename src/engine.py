@@ -40,7 +40,7 @@ class Engine:
         self.errors, self.err_msg = {}, {}  # 코인별 연속 오류 횟수 / 마지막 오류 메시지
         self.judgments = deque(maxlen=100)  # 판단/손절/청산 이벤트 (최신이 뒤)
         self.curve = deque(maxlen=1000)  # (ts, 포트폴리오 자산) 폴링마다 1점 — 메모리 전용
-        self.polled_at = self.error = None
+        self.polled_at = self.error = self.symbols_note = None
         self._load()
 
     # ---------- 제어 (웹 스레드에서 호출) ----------
@@ -189,7 +189,7 @@ class Engine:
             return {
                 "mode": "jev", "now": time.time(), "running": self.running, "symbols": self.symbols, "timeframe": self.timeframe,
                 "judge": self.judge.name, "profile": self.profile.name, "dry_run": True, "poll_seconds": self.interval,
-                "polled_at": self.polled_at, "error": self.error,
+                "polled_at": self.polled_at, "error": self.error, "symbols_note": self.symbols_note,
                 "coins": coins, "equity": eq, "start_equity": self.start_equity, "return_pct": (eq / self.start_equity - 1) * 100,
                 "realized_pnl": realized, "unrealized_pnl": unreal, "session_loss_pct": self._loss() * 100, "loss_limit_pct": self.profile.max_session_loss * 100,
                 "exposure_pct": 100 * sum(b.side != "flat" for b in self.slots.values()) / len(self.slots),
@@ -272,7 +272,9 @@ class Engine:
             self.error = f"jev_state.json unreadable, started fresh: {e}"
             return
         if set(slots) != set(self.symbols):
-            log.warning("SYMBOLS differs from the saved portfolio %s: keeping the saved one", list(slots))
+            self.symbols_note = (f"SYMBOLS 에 설정된 코인({', '.join(self.symbols)})과 저장된 계좌의 코인({', '.join(slots)})이 달라 "
+                                  "저장된 쪽을 그대로 씁니다. 새 코인 구성을 적용하려면 이 서비스의 상태 파일(jev_state.json)을 지우고 재시작하세요.")
+            log.warning(self.symbols_note)
         self.slots, self.symbols = slots, list(slots)  # 저장된 포트폴리오가 우선 (도중에 구성이 바뀌면 자본 배분이 어긋난다)
         self.running, self.start_equity, self.prices = state
         log.info("restored: %d slots running=%s equity=%.2f", len(slots), self.running, self._equity())

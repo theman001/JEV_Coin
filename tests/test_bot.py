@@ -321,6 +321,11 @@ def test_engine_no_symbol_selection_and_state_survives_restart(tmp_path):
     assert e2.symbols == list(SYMS) and e2.running and e2.start_equity == 1000.0 and sides(e2) == ["long", "long"]
     assert e2._equity() == pytest.approx(e._equity()) and (tmp_path / "jev_state.json").exists()
     assert len((tmp_path / "judgments.jsonl").read_text().splitlines()) >= 2
+    assert "OTHER/USDT" in e2.symbols_note and all(s in e2.symbols_note for s in SYMS)  # 조용히 무시하지 않고 화면에 알림
+    assert e2.snapshot()["symbols_note"] == e2.symbols_note
+
+    e3 = engine(tmp_path)  # 이번엔 SYMBOLS 가 저장된 것과 같음 → 알림 없음
+    assert e3.symbols_note is None and e3.snapshot()["symbols_note"] is None
 
 
 def test_engine_discards_result_if_stopped_during_judge(tmp_path):
