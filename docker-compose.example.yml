@@ -31,7 +31,7 @@ services:
       TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
       WEB_USER: ${WEB_USER:-admin}
       WEB_PASSWORD: ${WEB_PASSWORD:?.env 에 WEB_PASSWORD 를 설정하세요}
-      SYMBOLS: ${SYMBOLS:-SOL/USDT,ETH/USDT,BTC/USDT,XRP/USDT,DOGE/USDT}
+      SYMBOLS: ${SYMBOLS:-ONE/USDT,PHA/USDT,SAGA/USDT,MUBARAK/USDT,QNT/USDT}
       TIMEFRAME: ${TIMEFRAME:-5m}
       EXCHANGE: ${EXCHANGE:-binance}
       POLL_SECONDS: ${POLL_SECONDS:-10}
@@ -55,7 +55,7 @@ services:
       TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
       WEB_USER: ${WEB_USER:-admin}
       WEB_PASSWORD: ${WEB_PASSWORD:?.env 에 WEB_PASSWORD 를 설정하세요}
-      SYMBOLS: ${SYMBOLS:-SOL/USDT,ETH/USDT,BTC/USDT,XRP/USDT,DOGE/USDT}
+      SYMBOLS: ${SYMBOLS:-ONE/USDT,PHA/USDT,SAGA/USDT,MUBARAK/USDT,QNT/USDT}
       # TIMEFRAME=1s 를 엔진이 보고 policy.PROFILES["1s"] 를 자동으로 쓴다(사용자 확정 2026-09-29):
       # 비용 게이트·확신도·반전위험 문턱을 크게 완화하고, 대신 코인당 30초에 한 번만 Jev 를 부른다(쿨다운) — 1초마다 부르면 하루 43만+ 회.
       # 상세 수치·근거는 src/policy.py 주석과 CLAUDE.md '단타 현실 체크' 참고. 성과 근거 없음, 관찰용.

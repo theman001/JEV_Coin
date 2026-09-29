@@ -15,7 +15,7 @@ from .web import make_server
 
 # MODE=jev(기본): Jev 판단 단타 봇, MODE=trend: 4h SMA 20/50 추세추종 포트폴리오 (STRATEGY_RESEARCH.md §14). 환경변수를 안 주면 모드별 기본값
 DEFAULTS = {
-    "jev": {"symbols": "SOL/USDT,ETH/USDT,BTC/USDT,XRP/USDT,DOGE/USDT", "exchange": "binance", "timeframe": "5m", "poll": "10", "equity": "100"},
+    "jev": {"symbols": "ONE/USDT,PHA/USDT,SAGA/USDT,MUBARAK/USDT,QNT/USDT", "exchange": "binance", "timeframe": "5m", "poll": "10", "equity": "100"},
     "trend": {"symbols": "BTC/KRW,ETH/KRW,SOL/KRW,XRP/KRW,DOGE/KRW", "exchange": "upbit", "timeframe": "4h", "poll": "60", "equity": "1000000"},
 }
 
